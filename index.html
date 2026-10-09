@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Animation</title>
+  <meta name="description" content="Hand-drawn style cartoons made by AI from a single animation prompt.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <p class="site-title"><a href="./">AI Animation</a></p>
+      <nav class="site-nav">
+        <a href="./" aria-current="page">Gallery</a>
+        <a href="about.html">The prompt</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <p class="intro">
+      Each cartoon here was made by an AI model from the same long animation prompt,
+      followed by a short direction naming the subject. The prompt asks the model to work
+      like a classical hand-drawn animation studio: key poses, in-betweens, multiplane depth
+      and a moving camera.
+    </p>
+    <div id="gallery" class="gallery"></div>
+  </main>
+
+  <script src="gallery.js"></script>
+</body>
+</html>

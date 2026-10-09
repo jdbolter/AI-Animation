@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Animation</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <p class="site-title"><a href="./">AI Animation</a></p>
+      <nav class="site-nav">
+        <a href="./">Gallery</a>
+        <a href="about.html">The prompt</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap" id="watch"></main>
+
+  <script src="gallery.js"></script>
+  <script>
+    (function () {
+      var main = document.getElementById('watch');
+      var slug = new URLSearchParams(location.search).get('a');
+
+      loadAnimations().then(function (list) {
+        var a = list.find(function (x) { return x.slug === slug; });
+        if (!a) {
+          main.appendChild(el('p', 'error', 'Animation not found.'));
+          return;
+        }
+        document.title = a.title + ' · AI Animation';
+
+        var player = el('div', 'player');
+        player.style.aspectRatio = a.aspect || '16 / 9';
+        if (a.type === 'video') {
+          var video = el('video');
+          video.src = animationFile(a);
+          video.controls = true;
+          video.loop = true;
+          video.autoplay = true;
+          video.muted = true;
+          video.playsInline = true;
+          if (a.poster) video.poster = animationDir(a) + a.poster;
+          player.appendChild(video);
+        } else {
+          var frame = el('iframe');
+          frame.src = animationFile(a);
+          frame.title = a.title;
+          frame.setAttribute('sandbox', 'allow-scripts');
+          player.appendChild(frame);
+        }
+        main.appendChild(player);
+
+        var details = el('div', 'details');
+        details.appendChild(el('h1', null, a.title));
+        var meta = metaLine(a);
+        if (meta) details.appendChild(el('div', 'meta', meta));
+        if (a.direction) {
+          details.appendChild(el('p', 'label', 'Direction'));
+          details.appendChild(el('p', 'direction', '“' + a.direction + '”'));
+        }
+        if (a.notes) {
+          details.appendChild(el('p', 'label', 'Notes'));
+          details.appendChild(el('p', null, a.notes));
+        }
+        if (a.prompt) {
+          var link = el('a', null, 'Read the full prompt used for this animation');
+          link.href = animationDir(a) + a.prompt;
+          var p = el('p');
+          p.style.marginTop = '24px';
+          p.appendChild(link);
+          details.appendChild(p);
+        }
+        main.appendChild(details);
+      }).catch(function (err) {
+        main.appendChild(el('p', 'error', err.message));
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Prompt · AI Animation</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <p class="site-title"><a href="./">AI Animation</a></p>
+      <nav class="site-nav">
+        <a href="./">Gallery</a>
+        <a href="about.html" aria-current="page">The prompt</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <p class="intro">
+      Every animation starts from this prompt. The blanks at the end
+      (<code>{{USER_DIRECTION}}</code> and the others) are filled in with the subject and
+      any notes on length, shape and style.
+    </p>
+    <pre id="prompt" class="prompt-text">Loading…</pre>
+  </main>
+
+  <script>
+    fetch('prompt.txt')
+      .then(function (res) {
+        if (!res.ok) throw new Error('Could not load prompt.txt');
+        return res.text();
+      })
+      .then(function (text) { document.getElementById('prompt').textContent = text; })
+      .catch(function (err) { document.getElementById('prompt').textContent = err.message; });
+  </script>
+</body>
+</html>

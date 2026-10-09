@@ -1,0 +1,21 @@
+# API keys: never commit
+.env
+.env.local
+.env.*.local
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+.vercel
+
+# Logs and scratch files
+*.log
+scratch/

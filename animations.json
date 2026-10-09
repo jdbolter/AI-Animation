@@ -1,0 +1,22 @@
+[
+  {
+    "slug": "the-space-between-words",
+    "title": "The Space Between Words",
+    "direction": "After the post-office fire, the surviving letters were taken to the schoolhouse. Two copyists sat at desks built for children.",
+    "type": "html",
+    "aspect": "16 / 9",
+    "previewTime": 29.3,
+    "model": "Claude Opus 5.5",
+    "date": "2026-10-09",
+    "prompt": "prompt.txt",
+    "notes": "About two minutes, in ten shots, drawn in code on a canvas. Characters are animated on twos with boiling ink lines over still painted backgrounds, with multiplane parallax and narration captions taken from the story. Some exchanges (“Mine shows where we cannot read”) and the afternoon of revisions are left out for length. Click the animation to pause it."
+  },
+  {
+    "slug": "example-bouncing-ball",
+    "title": "Example: Bouncing Ball",
+    "direction": "a red ball bounces through a hilly landscape",
+    "type": "html",
+    "aspect": "16 / 9",
+    "notes": "Placeholder made by hand to test the site, not by the prompt. Replace it with a real animation."
+  }
+]
