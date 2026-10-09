@@ -15,7 +15,7 @@
 // The Space Between Words: a multiplane cartoon drawn in canvas.
 // Characters and effects are drawn "on twos" (12 drawings a second) with boiling ink lines;
 // backgrounds are painted once and stay still; the camera moves smoothly through the planes.
-// Add ?t=SECONDS to the URL to hold a single frame. Click to pause.
+// Add ?t=SECONDS to the URL to hold a single frame. Click to pause; it plays once, then click to watch again.
 
 const W = 1280, H = 720;
 const cvs = document.getElementById('c');
@@ -942,15 +942,25 @@ function resize() {
 }
 const FIX = new URLSearchParams(location.search).get('t');
 let clock = 0, last = null, paused = false;
+let ended = false;
 function frame(now) {
-  if (last !== null && !paused) clock += Math.min(.1, (now - last) / 1000);
+  if (last !== null && !paused && !ended) clock += Math.min(.1, (now - last) / 1000);
   last = now;
-  render(clock % TOTAL);
+  if (clock >= TOTAL - .001) { clock = TOTAL - .001; ended = true; }
+  render(clock);
+  if (ended) endCard();
   requestAnimationFrame(frame);
 }
+// The film plays once and stops on its last (faded) frame with an offer to watch again.
+function endCard() {
+  ctx.setTransform(VIEW.k, 0, 0, VIEW.k, VIEW.ox, VIEW.oy);
+  ctx.save(); ctx.font = 'italic 34px ' + SERIF; ctx.textAlign = 'center'; ctx.fillStyle = '#f5ecdb';
+  ctx.fillText('\u21bb  Watch again', W / 2, H / 2 + 12); ctx.restore();
+}
+function toggle() { if (ended) { clock = 0; ended = false; paused = false; } else paused = !paused; }
 addEventListener('resize', () => { resize(); if (FIX !== null) render(parseFloat(FIX)); });
-addEventListener('click', () => { paused = !paused; });
-addEventListener('keydown', e => { if (e.key === ' ') { paused = !paused; e.preventDefault(); } });
+addEventListener('click', toggle);
+addEventListener('keydown', e => { if (e.key === ' ') { toggle(); e.preventDefault(); } });
 resize();
 // A held frame is redrawn for its first second, in case the page is still being sized.
 let held = 0;

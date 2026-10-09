@@ -1,0 +1,977 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Missing Tree</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    canvas { display: block; cursor: pointer; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// The Missing Tree: a multiplane cartoon drawn in canvas.
+// Characters and effects are drawn "on twos" (12 drawings a second) with boiling ink lines;
+// backgrounds are painted once and stay still; the camera moves smoothly through the planes.
+// Add ?t=SECONDS to the URL to hold a single frame. Click to pause; it plays once, then click to watch again.
+
+const W = 1280, H = 720;
+const cvs = document.getElementById('c');
+let ctx = cvs.getContext('2d');
+let VIEW = { k: 1, ox: 0, oy: 0 };
+
+const INK = '#2a2420', SKIN = '#e9c9a8';
+const HAND = '"Snell Roundhand","Apple Chancery","Segoe Script","Brush Script MT",cursive';
+const SERIF = '"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif';
+
+// ---------- math ----------
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, f) => a + (b - a) * f;
+const ease = f => { f = clamp(f); return f * f * (3 - 2 * f); };
+const easeOut = f => { f = clamp(f); return 1 - (1 - f) ** 3; };
+const seg = (u, a, b) => clamp((u - a) / (b - a));
+const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+const twos = u => Math.floor(u * 12) / 12;
+function mix(a, b, f) { return Array.isArray(a) ? a.map((x, i) => x + (b[i] - x) * f) : a + (b - a) * f; }
+// Exposure-sheet keys: [[time, value], ...], eased between neighbours.
+function K(u, keys, e = ease) {
+  if (u <= keys[0][0]) return keys[0][1];
+  for (let i = 1; i < keys.length; i++) {
+    if (u < keys[i][0]) {
+      const [a, va] = keys[i - 1], [b, vb] = keys[i];
+      return mix(va, vb, e((u - a) / (b - a)));
+    }
+  }
+  return keys[keys.length - 1][1];
+}
+function R(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function shade(h, a) {
+  const n = parseInt(h.slice(1), 16);
+  let r = n >> 16, g = n >> 8 & 255, b = n & 255;
+  const t = a < 0 ? 0 : 255, p = Math.abs(a);
+  r = Math.round(r + (t - r) * p); g = Math.round(g + (t - g) * p); b = Math.round(b + (t - b) * p);
+  return `rgb(${r},${g},${b})`;
+}
+
+// ---------- ink ----------
+let BOIL = 0;
+function jitterPts(pts, amt, r) { return pts.map(p => [p[0] + (r() - .5) * 2 * amt, p[1] + (r() - .5) * 2 * amt]); }
+function tracePath(p, close, sharp) {
+  ctx.beginPath();
+  if (sharp || p.length < 3) {
+    ctx.moveTo(p[0][0], p[0][1]);
+    for (let i = 1; i < p.length; i++) ctx.lineTo(p[i][0], p[i][1]);
+    if (close) ctx.closePath();
+    return;
+  }
+  if (close) {
+    const n = p.length; const m = mid(p[n - 1], p[0]);
+    ctx.moveTo(m[0], m[1]);
+    for (let i = 0; i < n; i++) { const q = p[i], m2 = mid(q, p[(i + 1) % n]); ctx.quadraticCurveTo(q[0], q[1], m2[0], m2[1]); }
+    ctx.closePath();
+  } else {
+    ctx.moveTo(p[0][0], p[0][1]);
+    for (let i = 1; i < p.length - 1; i++) { const m = mid(p[i], p[i + 1]); ctx.quadraticCurveTo(p[i][0], p[i][1], m[0], m[1]); }
+    const l = p[p.length - 1]; ctx.lineTo(l[0], l[1]);
+  }
+}
+// A hand-inked shape. Fill and line get separate jitter, like paint laid under a drawn line.
+// Lines "boil" (redraw slightly differently) unless o.still is set.
+function ink(pts, o = {}) {
+  const id = o.id || 1, j = o.j ?? 1.1, seed = o.still ? id * 7919 : id * 7919 + BOIL * 104729;
+  const close = o.close ?? !!o.fill;
+  if (o.fill) { tracePath(jitterPts(pts, j * .8, R(seed + 17)), true, o.sharp); ctx.fillStyle = o.fill; ctx.fill(); }
+  if (o.stroke !== false) {
+    tracePath(jitterPts(pts, j, R(seed)), close, o.sharp);
+    ctx.strokeStyle = o.stroke || INK; ctx.lineWidth = o.w || 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.stroke();
+  }
+}
+function ellPts(c, rx, ry, n = 12) { const p = []; for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; p.push([c[0] + Math.cos(a) * rx, c[1] + Math.sin(a) * ry]); } return p; }
+function limb(pts, w, col, id) { ink(pts, { w: w + 3.2, stroke: INK, id }); ink(pts, { w, stroke: col, id }); }
+function hand(p, skin, s, id) { ink(ellPts(p, 5.5 * s, 5 * s, 8), { fill: skin, w: 1.6, id }); }
+function dabs(x, y, w, h, col, n, seed, r0 = 6, r1 = 20, a = .25) {
+  const r = R(seed); ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = col;
+  for (let i = 0; i < n; i++) {
+    const cx = x + r() * w, cy = y + r() * h, rx = lerp(r0, r1, r()), ry = rx * lerp(.3, .7, r());
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, (r() - .5) * .6, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+}
+function writeOn(text, x, y, prog) {
+  const w = ctx.measureText(text).width;
+  if (prog <= 0) return x;
+  ctx.save(); ctx.beginPath(); ctx.rect(x - 6, y - 60, w * prog + 6, 90); ctx.clip(); ctx.fillText(text, x, y); ctx.restore();
+  return x + w * prog;
+}
+
+// ---------- multiplane camera ----------
+// p is the plane's depth factor: 1 = character plane, <1 = farther, >1 = nearer the lens.
+let CAM = { x: W / 2, y: H / 2, z: 1 };
+function layer(p, fn) {
+  ctx.save();
+  const z = 1 + (CAM.z - 1) * p;
+  ctx.translate(W / 2, H / 2); ctx.scale(z, z);
+  ctx.translate(-(W / 2 + (CAM.x - W / 2) * p), -(H / 2 + (CAM.y - H / 2) * p));
+  fn();
+  ctx.restore();
+}
+
+// ---------- characters ----------
+const MARA = { id: 1, c: '#5c7380', legC: '#4d5f6a', hair: 'bun', hairC: '#3b2a22', seated: true };
+const JONAS = { id: 2, c: '#7b5b3e', legC: '#3d3a37', hair: 'short', hairC: '#4a3a2c', glasses: true, seated: true };
+const VALE = { id: 3, c: '#3d4658', legC: '#3a3431', hair: 'bun', hairC: '#aaa49b', skin: '#e4c3a6' };
+const SON_COAT = '#3d4658', VALE_OWN = '#6d4a56';
+
+function ikE(S, T, a, b, bend) {
+  const dx = T[0] - S[0], dy = T[1] - S[1];
+  const dd = clamp(Math.hypot(dx, dy), Math.abs(a - b) + 1, a + b - .5);
+  const ang = Math.atan2(dy, dx);
+  const A = Math.acos(clamp((a * a + dd * dd - b * b) / (2 * a * dd), -1, 1));
+  const e = ang + bend * A;
+  return [S[0] + Math.cos(e) * a, S[1] + Math.sin(e) * a];
+}
+// Build a side-view skeleton. Construction order follows the prompt: line of action (lean),
+// pelvis, ribcage, head, then limbs solved toward hand targets.
+function rig(o) {
+  const s = o.s || 1, d = o.dir || 1, lean = o.lean || 0, hip = [o.x, o.y];
+  const a = d * lean, ca = Math.cos(a), sa = Math.sin(a);
+  const L = (lx, ly) => { const X = d * lx * s, Y = ly * s; return [hip[0] + X * ca - Y * sa, hip[1] + X * sa + Y * ca]; };
+  const sh = L(0, -80), neck = L(2, -90);
+  const ha = d * (lean + (o.head || 0)), ch = Math.cos(ha), shh = Math.sin(ha);
+  const rot = (base, lx, ly) => { const X = d * lx * s, Y = ly * s; return [base[0] + X * ch - Y * shh, base[1] + X * shh + Y * ch]; };
+  const hc = rot(neck, 4, -24);
+  const Hh = (lx, ly) => rot(hc, lx, ly);
+  const legs = [];
+  if (o.seated) {
+    const knee = [hip[0] + d * 50 * s, hip[1] - (o.kneeUp ?? 12) * s];
+    const foot = [knee[0] + d * 6 * s, hip[1] + (o.seatH ?? 48) * s];
+    legs.push([hip, knee, foot], [[hip[0] - d * 4 * s, hip[1]], [knee[0] - d * 8 * s, knee[1] + 2 * s], [foot[0] - d * 12 * s, foot[1]]]);
+  } else {
+    const ph = o.walk || 0, st = o.stride || 0;
+    for (const k of [0, 1]) {
+      const p = ph + k * Math.PI;
+      const a1 = Math.sin(p) * .38 * st;
+      const bend = Math.max(0, Math.sin(p - 1.3)) * .7 * st;
+      const kn = [hip[0] + d * Math.sin(a1) * 50 * s, hip[1] + Math.cos(a1) * 50 * s];
+      const a2 = a1 - bend;
+      legs.push([hip, kn, [kn[0] + d * Math.sin(a2) * 52 * s, kn[1] + Math.cos(a2) * 52 * s]]);
+    }
+  }
+  const up = 44 * s, fo = 42 * s;
+  const arm = (T, sign) => {
+    if (!T) T = [sh[0] + d * (4 + sign * Math.sin(o.walk || 0) * 14 * (o.stride || 0)) * s, sh[1] + 82 * s];
+    const e1 = ikE(sh, T, up, fo, 1), e2 = ikE(sh, T, up, fo, -1);
+    const el = e1[1] > e2[1] ? e1 : e2;
+    const dx = T[0] - el[0], dy = T[1] - el[1], dl = Math.hypot(dx, dy) || 1;
+    return [sh, el, [el[0] + dx / dl * fo, el[1] + dy / dl * fo]];
+  };
+  return { s, d, hip, sh, neck, hc, Hh, L, legs, armF: arm(o.handF, 1), armB: arm(o.handB, -1) };
+}
+function drawHead(o, r, id) {
+  const H = r.Hh, s = r.s, skin = o.skin || SKIN, hc = o.hairC || '#3a2a20';
+  if (o.hair === 'bun') ink(ellPts(H(-19, -8), 9 * s, 9 * s, 10), { fill: hc, id: id + 1, w: 1.6 });
+  ink([H(-18, -2), H(-17, -15), H(-8, -23), H(6, -23), H(15, -16), H(18, -7), H(19, -2), H(24, 5), H(18, 8), H(18, 13), H(13, 19), H(3, 20), H(-9, 15)], { fill: skin, id: id + 2, w: 2 });
+  if (o.hair === 'bun') ink([H(-19, 2), H(-20, -14), H(-10, -24), H(5, -25), H(15, -18), H(8, -16), H(-2, -15), H(-8, -9), H(-12, 3)], { fill: hc, id: id + 3, w: 1.6 });
+  if (o.hair === 'short') ink([H(-19, 3), H(-20, -15), H(-9, -25), H(7, -25), H(17, -17), H(11, -17), H(2, -18), H(-6, -12), H(-10, 2)], { fill: hc, id: id + 3, w: 1.6 });
+  ink(ellPts(H(-5, 1), 3.5 * s, 5.5 * s, 8), { fill: shade(skin, -.1), id: id + 4, w: 1.3 });
+  const e = H(10, -3); ctx.fillStyle = INK; ctx.beginPath(); ctx.arc(e[0], e[1], 1.9 * s, 0, 7); ctx.fill();
+  ink([H(6, -9), H(13, -10)], { w: 1.6 * s, id: id + 5 });
+  ink([H(14, 13), H(17, 13)], { w: 1.3 * s, id: id + 6 });
+  if (o.glasses) { ink(ellPts(H(11, -3), 6 * s, 5 * s, 10), { stroke: '#2a221c', close: true, w: 1.6, id: id + 7 }); ink([H(5, -3), H(-4, -3)], { w: 1.3, id: id + 8 }); }
+  if (o.hat === 'cloche') ink([H(-22, -2), H(-21, -17), H(-11, -28), H(7, -28), H(18, -19), H(25, -9), H(12, -11), H(-6, -9), H(-14, -2)], { fill: o.hatC || '#3e3236', id: id + 9, w: 1.8 });
+  if (o.hat === 'bowler') { ink(ellPts(H(0, -22), 15 * s, 11 * s, 10), { fill: o.hatC || '#1e1c1b', id: id + 9, w: 1.6 }); ink([H(-21, -14), H(22, -14)], { w: 4 * s, stroke: o.hatC || '#1e1c1b', id: id + 10 }); }
+  if (o.hat === 'cap') ink([H(-19, -10), H(-18, -24), H(10, -26), H(18, -14), H(30, -12), H(16, -9), H(-12, -8)], { fill: o.hatC || '#1f2733', id: id + 9, w: 1.6 });
+}
+function drawArmF(o, r) { const id = o.id * 100 + 60; limb(r.armF, 10.5 * r.s, o.sleeve || o.c, id); hand(r.armF[2], o.skin || SKIN, r.s, id + 1); }
+function drawPerson(o, r) {
+  const s = r.s, d = r.d, id = o.id * 100 + 7, skin = o.skin || SKIN, legC = o.legC || '#38332f', sl = o.sleeve || o.c;
+  const shoe = (p, k) => ink(ellPts([p[0] + d * 6 * s, p[1] - 3 * s], 11 * s, 5 * s, 8), { fill: '#1f1b18', id: id + k, w: 1.5 });
+  limb(r.legs[1], 11 * s, shade(legC, -.25), id + 1); shoe(r.legs[1][2], 2);
+  limb(r.armB, 10.5 * s, shade(sl, -.22), id + 3); hand(r.armB[2], shade(skin, -.08), s, id + 4);
+  limb(r.legs[0], 12 * s, legC, id + 5); shoe(r.legs[0][2], 6);
+  limb([r.neck, r.Hh(-3, 16)], 9 * s, skin, id + 8);
+  const hf = o.hem ?? 10, hb = hf + (o.hemSkew || 0), L = r.L;
+  ink([L(-15, hb), L(-18, -28), L(-16, -70), L(-8, -86), L(6, -88), L(14, -78), L(18, -45), L(19, hf), L(2, hf + 3)], { fill: o.c, id: id + 9, w: 2.2 });
+  drawHead(o, r, id + 20);
+  if (!o.noArmF) drawArmF(o, r);
+}
+// A coat folded over a forearm.
+function drape(el, hd, col, id) {
+  const x0 = Math.min(el[0], hd[0]) - 6, x1 = Math.max(el[0], hd[0]) + 10, y = (el[1] + hd[1]) / 2;
+  ink([[x0, y - 6], [x1, y - 8], [x1 + 4, y + 70], [x1 - 6, y + 112], [x0 + 6, y + 116], [x0 - 4, y + 64]], { fill: col, sharp: true, id, w: 2.2 });
+  ink([[x0 + 2, y + 2], [x1 - 2, y], [x1, y + 22], [x0, y + 24]], { fill: shade(col, .12), sharp: true, id: id + 1, w: 1.6 });
+  ink([[x0 + 4, y + 30], [x0 - 10, y + 96], [x0 - 2, y + 140], [x0 + 16, y + 138], [x0 + 20, y + 90]], { fill: shade(col, -.15), sharp: true, id: id + 2, w: 2 });
+  ink([[x0 - 4, y + 132], [x0 + 18, y + 130]], { w: 2, stroke: 'rgba(200,205,220,.6)', id: id + 3 });
+  ink([[(x0 + x1) / 2 + 4, y + 30], [(x0 + x1) / 2 + 2, y + 108]], { w: 1.4, stroke: 'rgba(20,20,30,.6)', id: id + 4 });
+}
+
+// ---------- props ----------
+function chair(hx, hy, d, floor, id) {
+  const c = '#6a4d35', dk = '#4c3624';
+  ink([[hx - d * 24, hy + 8], [hx - d * 30, hy - 48]], { w: 5, stroke: dk, still: true, id: id + 3 });
+  ink([[hx - d * 27, hy - 44], [hx - d * 34, hy - 40], [hx - d * 31, hy - 20], [hx - d * 24, hy - 24]], { fill: c, still: true, id: id + 4, w: 1.6 });
+  ink([[hx - d * 26, hy + 6], [hx + d * 18, hy + 6], [hx + d * 18, hy + 13], [hx - d * 26, hy + 13]], { fill: c, sharp: true, still: true, id, w: 1.8 });
+  ink([[hx - d * 22, hy + 13], [hx - d * 22, floor]], { w: 4, stroke: dk, still: true, id: id + 1 });
+  ink([[hx + d * 14, hy + 13], [hx + d * 14, floor]], { w: 4, stroke: dk, still: true, id: id + 2 });
+}
+function desk(cx, floor, d, id) {
+  const t = floor - 80;
+  ink([[cx + d * 44, t + 30], [cx + d * 42, floor - 4]], { w: 4, stroke: '#4c3624', still: true, id });
+  ink([[cx - d * 52, t + 30], [cx - d * 50, floor]], { w: 5, stroke: '#5a412b', still: true, id: id + 1 });
+  ink([[cx + d * 52, t + 30], [cx + d * 50, floor]], { w: 5, stroke: '#5a412b', still: true, id: id + 2 });
+  ink([[cx - 56, t + 8], [cx + 56, t + 8], [cx + 54, t + 32], [cx - 54, t + 32]], { fill: '#6e5238', sharp: true, still: true, id: id + 3, w: 2 });
+  ink([[cx - d * 60, t + 6], [cx + d * 60, t - 4], [cx + d * 60, t + 4], [cx - d * 60, t + 12]], { fill: '#8c6a48', sharp: true, still: true, id: id + 4, w: 2 });
+  ink(ellPts([cx + d * 40, t - 8], 6, 7, 8), { fill: '#222', still: true, id: id + 5, w: 1.5 });
+  ink([[cx - d * 30, t + 3], [cx + d * 18, t - 2], [cx + d * 20, t + 1], [cx - d * 28, t + 7]], { fill: '#efe4cb', sharp: true, still: true, id: id + 6, w: 1.2 });
+}
+function seatedAtDesk(P, pose, floor, deskCx) {
+  const o = { ...P, ...pose };
+  const r = rig(o);
+  chair(o.x, o.y, o.dir, floor, o.id * 50 + 500);
+  drawPerson({ ...o, noArmF: true }, r);
+  desk(deskCx, floor, o.dir, o.id * 50 + 520);
+  drawArmF(o, r);
+  return r;
+}
+function heldPaper(p, ang, id) {
+  ctx.save(); ctx.translate(p[0], p[1]); ctx.rotate(ang);
+  ink([[-15, -26], [15, -24], [16, 18], [-14, 20]], { fill: '#efe5cd', sharp: true, id, w: 1.5 });
+  ctx.restore();
+}
+function ash(u, n, seed, col) {
+  const q = twos(u); ctx.fillStyle = col;
+  for (let i = 0; i < n; i++) {
+    const r = R(seed + i), sp = 8 + r() * 18;
+    const x = r() * W + Math.sin(q * 1.4 + i) * 16;
+    const y = ((r() * (H + 80)) + q * sp) % (H + 80) - 40;
+    const s = 1.5 + r() * 3;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(q * (r() - .5) * 3);
+    ctx.beginPath(); ctx.ellipse(0, 0, s * 1.6, s * .8, 0, 0, 7); ctx.fill(); ctx.restore();
+  }
+}
+function deskTop(dark) {
+  ink([[-300, -300], [W + 300, -300], [W + 300, H + 300], [-300, H + 300]], { fill: dark ? '#3a2a1e' : '#6b4e36', stroke: false, sharp: true, still: true, id: 701 });
+  const r = R(702);
+  ctx.save(); ctx.strokeStyle = dark ? 'rgba(0,0,0,.25)' : 'rgba(40,25,15,.3)'; ctx.lineWidth = 1.5;
+  for (let i = 0; i < 40; i++) {
+    const y = -100 + i * 24 + r() * 8;
+    ctx.beginPath(); ctx.moveTo(-200, y);
+    for (let x = -200; x <= W + 200; x += 60) ctx.lineTo(x, y + Math.sin(x * .004 + i) * 6);
+    ctx.stroke();
+  }
+  ctx.restore();
+  dabs(-200, -200, W + 400, H + 400, dark ? '#4a3626' : '#7a5a3e', 60, 703, 20, 80, .25);
+}
+function writingHand(nib, coat, id, lift = 0, noPen = false) {
+  const n = [nib[0], nib[1] - lift], X = (a, b) => [n[0] + a, n[1] + b];
+  limb([X(80, 66), X(160, 180), X(220, 350)], 54, coat, id);
+  ink([X(48, 44), X(92, 30), X(104, 62), X(60, 80)], { fill: '#efe9dc', id: id + 4, w: 1.8 });
+  if (!noPen && lift > 2) { ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.beginPath(); ctx.ellipse(nib[0] + 4, nib[1] + 2, 4, 2, 0, 0, 7); ctx.fill(); }
+  ink([X(8, 6), X(22, -8), X(48, -6), X(70, 12), X(78, 42), X(58, 62), X(26, 54), X(10, 32)], { fill: SKIN, id: id + 1, w: 2 });
+  ink([X(34, 18), X(50, 34)], { w: 1.4, stroke: 'rgba(90,60,40,.6)', id: id + 5 });
+  if (!noPen) ink([n, X(42, -74)], { w: 4.5, stroke: '#1f1a17', id: id + 3 });
+  ink([X(6, 4), X(18, -6), X(34, -6)], { w: 2.2, id: id + 2 });
+}
+
+// ---------- this story's cast and world ----------
+const OLD = { id: 5, c: '#c8c0ae', legC: '#5a554d', hair: 'short', hairC: '#e4e0d8', skin: '#e2bfa0', seated: true, kneeUp: 0, seatH: 80 };
+const MAPPER = { id: 6, c: '#3f7f86', legC: '#2f3a44', hair: 'bun', hairC: '#2a1d16', seated: true, kneeUp: 0, seatH: 80 };
+const WALKER = { id: 7, c: '#9b8db0', legC: '#4a4550', hair: 'bun', hairC: '#cfc9c2', skin: '#e6c4a8', hem: 50 };
+const BLUE = '#3d6fb0', FLOOR = 600, SEAT = 512, UI = '"Helvetica Neue",Helvetica,Arial,sans-serif';
+
+function moustache(r) { const H = r.Hh; ink([H(12, 9), H(19, 8), H(22, 11), H(15, 13)], { fill: '#e8e4dc', w: 1.2, id: 7001 }); }
+function person(P, pose) {
+  const o = { ...P, ...pose }, r = rig(o);
+  drawPerson(o, r);
+  if (P === OLD) moustache(r);
+  return r;
+}
+
+function pharmacy(x, base) {
+  ink([[x, base - 170], [x + 180, base - 170], [x + 180, base], [x, base]], { fill: '#efe9dc', sharp: true, still: true, id: 930, w: 1.5, stroke: 'rgba(90,70,50,.4)' });
+  const pts = [[x - 8, base - 80], [x + 188, base - 80], [x + 188, base - 58]];
+  for (let k = 0; k <= 8; k++) pts.push([x + 188 - k * 24.5 - 12, base - 50], [x + 188 - (k + 1) * 24.5, base - 58]);
+  ink(pts, { fill: '#3f8a5a', sharp: true, still: true, id: 931, w: 1.5 });
+  for (let k = 0; k < 8; k += 2) ink([[x + k * 24, base - 80], [x + k * 24 + 12, base - 80], [x + k * 24 + 12, base - 58], [x + k * 24, base - 58]], { fill: 'rgba(255,255,255,.35)', stroke: false, sharp: true, still: true, id: 932 + k });
+  ink([[x + 130, base - 150], [x + 166, base - 150], [x + 166, base - 114], [x + 130, base - 114]], { fill: '#f6f6f2', sharp: true, still: true, id: 941, w: 1.2 });
+  ctx.fillStyle = '#2f9a4f'; ctx.fillRect(x + 143, base - 146, 10, 28); ctx.fillRect(x + 134, base - 137, 28, 10);
+}
+function streetBG(u) {
+  const q = twos(u);
+  layer(.15, () => {
+    const g = ctx.createLinearGradient(0, -200, 0, 480); g.addColorStop(0, '#fffdf7'); g.addColorStop(1, '#f0e4c8');
+    ctx.fillStyle = g; ctx.fillRect(-500, -500, W + 1000, 1100);
+    const s = ctx.createRadialGradient(260, 30, 10, 260, 30, 460); s.addColorStop(0, 'rgba(255,255,252,1)'); s.addColorStop(1, 'rgba(255,255,252,0)');
+    ctx.fillStyle = s; ctx.fillRect(-500, -500, W + 1000, 1100);
+  });
+  layer(.35, () => {
+    const r = R(901); let x = 120;
+    while (x < W + 400) {
+      const w = 90 + r() * 120, h = 110 + r() * 170, c = ['#eadcc0', '#e2d2b4', '#ede3cd', '#ddd0b8'][Math.floor(r() * 4)];
+      ink([[x, 445 - h], [x + w, 445 - h], [x + w, 448], [x, 448]], { fill: c, sharp: true, still: true, id: 950 + Math.floor(x), w: 1.5, stroke: 'rgba(90,70,50,.3)' });
+      for (let wy = 445 - h + 22; wy < 420; wy += 36) for (let wx = x + 14; wx < x + w - 22; wx += 30)
+        ink([[wx, wy], [wx + 13, wy], [wx + 13, wy + 18], [wx, wy + 18]], { fill: 'rgba(150,138,120,.3)', stroke: false, sharp: true, still: true, id: 3000 + Math.floor(wx * 3 + wy) });
+      x += w + 8;
+    }
+    pharmacy(-120, 448);
+    ink([[-400, 446], [W + 400, 446], [W + 400, 470], [-400, 470]], { fill: '#e2d4b6', sharp: true, still: true, id: 960, w: 1, stroke: 'rgba(90,70,50,.25)' });
+  });
+  layer(.85, () => {
+    ink([[-500, 468], [W + 500, 468], [W + 500, H + 400], [-500, H + 400]], { fill: '#ebdfc5', sharp: true, still: true, id: 961, stroke: false });
+    ink([[-500, 440], [W + 500, 440], [W + 500, 505], [-500, 505]], { fill: '#d3bf8e', sharp: true, still: true, id: 962, w: 1.2, stroke: 'rgba(110,90,50,.4)' });
+    dabs(-400, 444, W + 800, 58, '#c4ad74', 50, 963, 6, 20, .4);
+    for (let k = 0; k < 6; k++) { const y = 520 + k * k * 9 + k * 14; ink([[-500, y], [W + 500, y + 1]], { w: 1.2, stroke: 'rgba(120,100,70,.25)', still: true, id: 964 + k }); }
+    dabs(-400, 505, W + 800, 300, '#f6eedb', 50, 970, 20, 70, .35);
+  });
+  layer(.8, () => {
+    ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.lineWidth = 3;
+    for (let k = 0; k < 9; k++) {
+      const x0 = -200 + k * 190, y0 = 470 + ((q * 18 + k * 40) % 110);
+      ctx.beginPath(); for (let i = 0; i < 8; i++) { const x = x0 + i * 16, y = y0 + Math.sin(i * .9 + q * 5 + k) * 3; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke();
+    }
+    ctx.restore();
+  });
+}
+
+// The stump stands in the verge behind the bench; its top is a small table.
+function stump() {
+  const x = 385, b = 482;
+  ink([[x - 34, b - 58], [x + 34, b - 58], [x + 38, b], [x + 48, b + 6], [x - 50, b + 6], [x - 38, b]], { fill: '#7a5a3e', sharp: true, still: true, id: 6100, w: 2 });
+  for (const dx of [-18, 2, 20]) ink([[x + dx, b - 50], [x + dx + 2, b]], { w: 1.4, stroke: 'rgba(40,25,15,.5)', still: true, id: 6110 + dx });
+  ink(ellPts([x, b - 58], 35, 9, 14), { fill: '#dcbf90', still: true, id: 6101, w: 2 });
+  for (const k of [.7, .45, .2]) ink(ellPts([x + 2, b - 58], 35 * k, 9 * k, 12), { stroke: 'rgba(120,85,50,.6)', close: true, w: 1.1, still: true, id: 6102 + k * 10 });
+}
+function sapling() {
+  const x = 1010, b = 482;
+  ctx.save(); ctx.fillStyle = 'rgba(60,50,40,.5)';
+  for (const dx of [-24, 24]) { ctx.beginPath(); ctx.moveTo(x + dx - 2, b); ctx.lineTo(x + dx + 2, b); ctx.lineTo(x + dx + 150, b + 22); ctx.lineTo(x + dx + 142, b + 24); ctx.closePath(); ctx.fill(); }
+  ctx.fillStyle = 'rgba(60,70,40,.25)'; for (const [a, c] of [[30, 2], [44, 6], [38, -3]]) { ctx.beginPath(); ctx.arc(x + a, b + 8 + c, 3, 0, 7); ctx.fill(); }
+  ctx.restore();
+  for (const dx of [-24, 24]) ink([[x + dx, b + 2], [x + dx, b - 120]], { w: 5, stroke: '#a88456', still: true, id: 6200 + dx });
+  ink([[x - 24, b - 70], [x, b - 66], [x + 24, b - 70]], { w: 2, stroke: '#4a6a3a', still: true, id: 6230 });
+  ink([[x, b + 2], [x + 1, b - 100], [x - 3, b - 128]], { w: 3, stroke: '#6b5034', still: true, id: 6231 });
+  for (const [a, c, k] of [[-10, -122, 0], [8, -130, 1], [-2, -140, 2], [10, -112, 3]]) ink(ellPts([x + a, b + c], 7, 4, 8), { fill: '#7da05a', w: 1.2, id: 6240 + k });
+}
+function benchBack() {
+  const c = '#8a6a4a', iron = '#2b2a2a';
+  for (const x of [482, 858]) ink([[x, 418], [x, 600]], { w: 7, stroke: iron, still: true, id: 6304 + x });
+  ink([[466, 430], [874, 430], [874, 446], [466, 446]], { fill: c, sharp: true, still: true, id: 6301, w: 2 });
+  ink([[466, 456], [874, 456], [874, 472], [466, 472]], { fill: shade(c, -.08), sharp: true, still: true, id: 6302, w: 2 });
+  ink([[466, 482], [874, 482], [874, 498], [466, 498]], { fill: c, sharp: true, still: true, id: 6303, w: 2 });
+}
+function benchSeat() {
+  const c = '#9a7a56', iron = '#2b2a2a';
+  ink([[454, 512], [886, 512], [890, 526], [450, 526]], { fill: c, sharp: true, still: true, id: 6320, w: 2 });
+  ink([[450, 528], [890, 528], [888, 540], [452, 540]], { fill: shade(c, -.15), sharp: true, still: true, id: 6321, w: 2 });
+  ink([[478, 540], [470, 572], [478, 600], [466, 604]], { w: 7, stroke: iron, still: true, id: 6322 });
+  ink([[862, 540], [870, 572], [862, 600], [874, 604]], { w: 7, stroke: iron, still: true, id: 6323 });
+  ctx.save(); ctx.fillStyle = 'rgba(80,60,40,.18)'; ctx.beginPath(); ctx.ellipse(670, 606, 240, 10, 0, 0, 7); ctx.fill(); ctx.restore();
+}
+function umbrella(bx, by, id, ang = 0) {
+  ctx.save(); ctx.translate(bx, by); ctx.rotate(ang);
+  ink([[0, 0], [0, -150]], { w: 4, stroke: '#3a3a3a', id });
+  const t = -150;
+  ink([[-110, t + 48], [-84, t + 18], [-40, t + 2], [0, t - 4], [40, t + 2], [84, t + 18], [110, t + 48], [82, t + 40], [55, t + 50], [27, t + 42], [0, t + 52], [-27, t + 42], [-55, t + 50], [-82, t + 40]], { fill: BLUE, id: id + 1, w: 2.2 });
+  for (const x of [-82, -27, 27, 82]) ink([[0, t - 2], [x, t + 41]], { w: 1.2, stroke: 'rgba(20,35,70,.55)', id: id + 10 + x });
+  ink([[-40, t + 10], [0, t + 2], [30, t + 8]], { w: 3, stroke: 'rgba(255,255,255,.25)', id: id + 5 });
+  ink([[0, t - 4], [0, t - 14]], { w: 3, stroke: '#3a3a3a', id: id + 3 });
+  ink([[-7, -4], [7, -4], [7, 9], [-7, 9]], { fill: '#555', sharp: true, id: id + 4, w: 1.2 });
+  ctx.restore();
+}
+// The square of shade under a canopy.
+function umbrellaShade(cx, top, bottom) {
+  ctx.save(); ctx.globalCompositeOperation = 'multiply';
+  const g = ctx.createLinearGradient(0, top + 48, 0, bottom); g.addColorStop(0, 'rgba(110,130,185,.55)'); g.addColorStop(.75, 'rgba(125,145,192,.38)'); g.addColorStop(1, 'rgba(130,150,195,.12)');
+  ctx.fillStyle = g; ctx.filter = 'blur(3px)';
+  ctx.beginPath(); ctx.moveTo(cx - 98, top + 48); ctx.lineTo(cx + 98, top + 48); ctx.lineTo(cx + 112, bottom); ctx.lineTo(cx - 84, bottom); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+function furled(x, y, ang, id) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+  ink([[0, 0], [8, -10], [10, -88], [0, -104], [-10, -88], [-8, -10]], { fill: BLUE, id, w: 1.8 });
+  ink([[0, -104], [0, -116]], { w: 3, stroke: '#3a3a3a', id: id + 1 });
+  ink([[0, 0], [0, 14], [-8, 20], [-14, 14]], { w: 3.5, stroke: '#5a3a22', id: id + 2 });
+  ctx.restore();
+}
+function tabletHeld(p, ang, id) {
+  ctx.save(); ctx.translate(p[0], p[1]); ctx.rotate(ang);
+  ink([[-6, -26], [6, -24], [6, 26], [-6, 24]], { fill: '#24272c', sharp: true, id, w: 1.5 });
+  ctx.restore();
+}
+function walker(hx, hy, floor, id) {
+  const c = '#9aa2ab';
+  ink([[hx + 4, hy], [hx - 48, hy + 4]], { w: 5, stroke: c, id });
+  ink([[hx - 46, hy + 4], [hx - 58, floor - 8]], { w: 5, stroke: c, id: id + 1 });
+  ink([[hx - 2, hy], [hx + 6, floor]], { w: 5, stroke: c, id: id + 2 });
+  ink([[hx - 52, hy + 40], [hx + 2, hy + 38]], { w: 3, stroke: c, id: id + 3 });
+  ink(ellPts([hx - 58, floor - 6], 7, 7, 10), { fill: '#333', id: id + 4, w: 1.2 });
+  ink([[hx - 4, hy - 2], [hx + 8, hy + 1]], { w: 8, stroke: '#333', id: id + 5 });
+}
+
+// ---------- maps and screens ----------
+const TREES = []; for (let i = 0; i < 11; i++) TREES.push([700 + (i % 2 ? 26 : -26), 25 + i * 55]);
+const TARGET = TREES[5];
+const OLD_ROUTE = [[700, 620], [700, -20]];
+const NEW_ROUTE = [[700, 620], [700, 500], [300, 500], [300, 100], [700, 100], [700, -20]];
+function polyPart(pts, f) {
+  let total = 0; for (let i = 1; i < pts.length; i++) total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+  let left = total * f; const out = [pts[0]];
+  for (let i = 1; i < pts.length && left > 0; i++) {
+    const L = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+    if (left >= L) { out.push(pts[i]); left -= L; } else { const t = left / L; out.push([lerp(pts[i - 1][0], pts[i][0], t), lerp(pts[i - 1][1], pts[i][1], t)]); left = 0; }
+  }
+  return out;
+}
+// A city map in 1000 x 600 map units. st: mode ('forecast'|'aerial'|'hist'), gap, reroute, zoom.
+function drawMap(st) {
+  const aerial = st.mode === 'aerial';
+  ctx.save(); ctx.beginPath(); ctx.rect(0, 0, 1000, 600); ctx.clip();
+  const z = st.zoom || 1;
+  ctx.translate(TARGET[0], TARGET[1]); ctx.scale(z, z); ctx.translate(-TARGET[0], -TARGET[1]);
+  ctx.fillStyle = aerial ? '#b7b09c' : '#efeae0'; ctx.fillRect(-500, -500, 2000, 1600);
+  const r = R(77);
+  for (let bx = 0; bx < 6; bx++) for (let by = 0; by < 4; by++) {
+    const x0 = -100 + bx * 200 + 15, y0 = -100 + by * 200 + 15;
+    ctx.fillStyle = aerial ? '#a39b86' : '#e3ddcf'; ctx.fillRect(x0, y0, 170, 170);
+    for (let k = 0; k < 4; k++) { ctx.fillStyle = aerial ? ['#8f8a7c', '#b4ab95', '#7e7766'][k % 3] : '#d8d1c0'; ctx.fillRect(x0 + 10 + r() * 90, y0 + 10 + r() * 90, 40 + r() * 30, 30 + r() * 30); }
+  }
+  ctx.fillStyle = aerial ? '#cbc5b6' : '#fbf9f4';
+  for (let x = 100; x < 1000; x += 200) ctx.fillRect(x - 15, -500, 30, 1600);
+  for (let y = 100; y < 600; y += 200) ctx.fillRect(-500, y - 15, 2000, 30);
+  // pharmacy, two streets west
+  ctx.fillStyle = '#2f9a4f'; ctx.beginPath(); ctx.arc(330, 470, 13, 0, 7); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.fillRect(327, 462, 6, 16); ctx.fillRect(322, 467, 16, 6);
+  if (aerial) {
+    for (const t of TREES) {
+      if (t === TARGET) { ctx.fillStyle = '#7a5a3e'; ctx.beginPath(); ctx.arc(t[0], t[1], 5, 0, 7); ctx.fill(); continue; }
+      ctx.fillStyle = '#3f5a34'; ctx.beginPath(); ctx.arc(t[0], t[1], 24, 0, 7); ctx.fill();
+      ctx.fillStyle = 'rgba(160,190,110,.5)'; ctx.beginPath(); ctx.arc(t[0] - 6, t[1] - 6, 10, 0, 7); ctx.fill();
+    }
+  } else {
+    const gap = st.gap || 0;
+    ctx.fillStyle = 'rgba(90,160,95,.28)';
+    ctx.fillRect(668, -20, 64, TARGET[1] + 20 - gap * 60);
+    ctx.fillRect(668, TARGET[1] + gap * 60, 64, 640);
+    for (const t of TREES) {
+      let a = 1; if (t === TARGET) a = st.mode === 'hist' ? 0 : 1 - gap;
+      if (a <= 0) continue;
+      ctx.fillStyle = `rgba(70,140,80,${.35 * a})`; ctx.beginPath(); ctx.ellipse(t[0] + 10, t[1] + 8, 36, 30, 0, 0, 7); ctx.fill();
+      ctx.fillStyle = `rgba(50,110,60,${a})`; ctx.beginPath(); ctx.arc(t[0], t[1], 5, 0, 7); ctx.fill();
+    }
+    if (gap > 0 && gap < 1) for (let k = 0; k < 10; k++) { const rr = R(300 + k), a = rr() * 6.3, d = gap * 70 * rr(); ctx.fillStyle = `rgba(70,140,80,${.5 * (1 - gap)})`; ctx.beginPath(); ctx.arc(TARGET[0] + Math.cos(a) * d, TARGET[1] + Math.sin(a) * d, 4, 0, 7); ctx.fill(); }
+  }
+  if (st.mode === 'hist') {
+    ctx.save(); ctx.setLineDash([3, 9]); ctx.lineCap = 'round'; ctx.lineWidth = 3; ctx.strokeStyle = '#4a6a4a';
+    ctx.beginPath(); ctx.arc(TARGET[0], TARGET[1], 46, 0, 7); ctx.stroke(); ctx.restore();
+    ctx.fillStyle = '#4a6a4a'; ctx.font = '11px ' + UI; ctx.fillText('former canopy', TARGET[0] + 30, TARGET[1] - 46);
+  }
+  ctx.fillStyle = '#8a6a4a'; ctx.fillRect(TARGET[0] + 14, TARGET[1] - 4, 14, 8);
+  // routes
+  ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.setLineDash([14, 10]); ctx.lineWidth = 7;
+  const rr = st.reroute || 0;
+  if (rr < 1 && !aerial) { ctx.strokeStyle = `rgba(47,111,214,${1 - rr})`; ctx.beginPath(); ctx.moveTo(...OLD_ROUTE[0]); ctx.lineTo(...OLD_ROUTE[1]); ctx.stroke(); }
+  if (rr > 0) { const p = polyPart(NEW_ROUTE, rr); ctx.strokeStyle = '#2f6fd6'; ctx.beginPath(); ctx.moveTo(...p[0]); for (const q of p.slice(1)) ctx.lineTo(...q); ctx.stroke(); }
+  ctx.restore();
+  ctx.restore();
+}
+function screenChrome(x, y, w, title, chips, active) {
+  ctx.fillStyle = '#f4f2ee'; ctx.fillRect(x, y, w, 40);
+  ctx.fillStyle = '#2a2d33'; ctx.font = '600 17px ' + UI; ctx.textBaseline = 'middle'; ctx.fillText(title, x + 16, y + 20);
+  let cx = x + w - 16;
+  for (let i = chips.length - 1; i >= 0; i--) {
+    ctx.font = '13px ' + UI; const tw = ctx.measureText(chips[i]).width + 22; cx -= tw;
+    ctx.fillStyle = i === active ? '#2f6fd6' : '#e2e0da'; roundRect(cx, y + 8, tw, 24, 12); ctx.fill();
+    ctx.fillStyle = i === active ? '#fff' : '#4a4d55'; ctx.fillText(chips[i], cx + 11, y + 20); cx -= 8;
+  }
+  ctx.textBaseline = 'alphabetic';
+}
+function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+function office(u) {
+  layer(.6, () => {
+    ctx.fillStyle = '#d9d3c5'; ctx.fillRect(-300, -300, W + 600, H + 600);
+    dabs(-200, -200, W + 400, 900, '#e6e0d3', 40, 1201, 30, 90, .3);
+    ink([[1080, 40], [1300, 40], [1300, 400], [1080, 400]], { fill: '#fff7e2', sharp: true, still: true, id: 1202, w: 6, stroke: '#b8ad98' });
+    ink([[-300, 600], [W + 300, 600], [W + 300, H + 300], [-300, H + 300]], { fill: '#8a7058', sharp: true, still: true, id: 1203, w: 2 });
+    ink(ellPts([1130, 610], 40, 10), { fill: '#e8e2d6', still: true, id: 1204, w: 2 });
+    ink([[1100, 540], [1160, 540], [1156, 610], [1104, 610]], { fill: '#e8e2d6', sharp: true, still: true, id: 1205, w: 2 });
+  });
+  layer(1, () => {
+    ink([[600, 560], [680, 560], [700, 620], [580, 620]], { fill: '#2a2c30', sharp: true, still: true, id: 1206, w: 2 });
+    ink([[170, 40], [1110, 40], [1110, 580], [170, 580]], { fill: '#1e2024', sharp: true, still: true, id: 1207, w: 2.5 });
+    ctx.fillStyle = '#fbfaf7'; ctx.fillRect(190, 60, 900, 500);
+  });
+}
+function cursor(x, y, press) {
+  ctx.save(); ctx.translate(x, y); const k = press ? .85 : 1; ctx.scale(k, k);
+  ink([[0, 0], [0, 26], [7, 20], [12, 31], [17, 29], [12, 18], [21, 18]], { fill: '#fff', w: 1.6, sharp: true, id: 1300, j: .3 });
+  ctx.restore();
+}
+function photo(x, y, w, h) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(w / 420, h / 260);
+  ctx.beginPath(); ctx.rect(0, 0, 420, 260); ctx.clip();
+  ctx.fillStyle = '#fcfbf6'; ctx.fillRect(0, 0, 420, 260);
+  ctx.fillStyle = '#eee8da'; for (const [a, b, c] of [[0, 70, 40], [60, 50, 60], [150, 80, 30], [300, 60, 50], [360, 40, 60]]) ctx.fillRect(a, b, c + 50, 110 - b);
+  ctx.fillStyle = '#efe6cf'; ctx.fillRect(0, 108, 420, 152);
+  ctx.fillStyle = '#d9c99e'; ctx.fillRect(0, 100, 420, 20);
+  ink([[110, 92], [126, 92], [128, 112], [108, 112]], { fill: '#7a5a3e', sharp: true, still: true, id: 1401, w: 1.2 });
+  ink(ellPts([118, 92], 11, 3, 10), { fill: '#dcbf90', still: true, id: 1402, w: 1 });
+  ink([[150, 104], [310, 104], [310, 128], [150, 128]], { fill: '#8a6a4a', sharp: true, still: true, id: 1403, w: 1.2 });
+  ink([[146, 134], [314, 134], [314, 142], [146, 142]], { fill: '#9a7a56', sharp: true, still: true, id: 1404, w: 1.2 });
+  ink([[156, 142], [154, 166]], { w: 3, stroke: '#2b2a2a', still: true, id: 1405 }); ink([[304, 142], [306, 166]], { w: 3, stroke: '#2b2a2a', still: true, id: 1406 });
+  ctx.fillStyle = 'rgba(80,60,40,.18)'; ctx.fillRect(150, 166, 168, 5);
+  ink([[150, 300], [168, 238], [200, 232], [214, 250], [206, 300]], { fill: '#5b4030', id: 1407, w: 1.5, still: true });
+  ink([[232, 300], [236, 244], [262, 236], [286, 246], [282, 300]], { fill: '#5b4030', id: 1408, w: 1.5, still: true });
+  ctx.fillStyle = 'rgba(255,255,255,.25)'; ctx.fillRect(0, 0, 420, 260);
+  ctx.restore();
+}
+
+// ---------- shots ----------
+function shotTitle(u) {
+  CAM = { x: 640, y: 360, z: 1 + u * .01 };
+  layer(0, () => { ctx.fillStyle = '#f7f1e2'; ctx.fillRect(-50, -50, W + 100, H + 100); dabs(0, 0, W, H, '#fffaf0', 30, 11, 60, 180, .5); });
+  layer(1, () => {
+    const p = ease(seg(u, .3, 2.8));
+    ctx.save(); ctx.setLineDash([3, 14]); ctx.lineCap = 'round'; ctx.lineWidth = 5; ctx.strokeStyle = '#4a6a4a';
+    ctx.beginPath(); ctx.arc(640, 350, 230, -Math.PI / 2, -Math.PI / 2 + p * Math.PI * 2); ctx.stroke(); ctx.restore();
+    ctx.font = '70px ' + HAND; ctx.fillStyle = '#2a2420';
+    const txt = 'The Missing Tree', w = ctx.measureText(txt).width;
+    writeOn(txt, 640 - w / 2, 368, ease(seg(u, 1.4, 4)));
+  });
+}
+function shotComplaint(u) {
+  CAM = { x: 640, y: 320, z: lerp(1, 1.06, ease(u / 8)) };
+  office(u);
+  layer(1, () => {
+    screenChrome(190, 60, 900, 'Shade Routes · Feedback', ['Inbox', 'Map'], 0);
+    const a = ease(seg(u, .5, 1.1));
+    ctx.save(); ctx.globalAlpha = a; ctx.translate(0, (1 - a) * 20);
+    ctx.font = '15px ' + UI; ctx.fillStyle = '#6a6d75';
+    ctx.fillText('From: a resident', 230, 135); ctx.fillText('Re: Shaded route along the avenue', 230, 160);
+    ctx.font = '600 26px ' + UI; ctx.fillStyle = '#22252b';
+    ctx.save(); ctx.beginPath(); ctx.rect(225, 175, 30 + ctx.measureText('Your shaded route has no shade.').width * ease(seg(u, 1.2, 3)), 50); ctx.clip();
+    ctx.fillText('Your shaded route has no shade.', 230, 208); ctx.restore();
+    photo(230, 250, 420, 260);
+    ctx.font = '13px ' + UI; ctx.fillStyle = '#6a6d75'; ctx.fillText('bench.jpg', 230, 532);
+    ctx.restore();
+  });
+}
+function shotLayers(u) {
+  const q = twos(u);
+  CAM = { x: 640, y: 320, z: lerp(1.06, 1.12, ease(u / 13)) };
+  office(u);
+  // Flipping the layers like drawings on a peg bar: one database knew, another did not.
+  let mode = 'forecast', chip = 2;
+  if (q > 1.4 && q < 2.6) { mode = 'aerial'; chip = 0; }
+  if (q >= 2.6 && q < 3.8) { mode = 'log'; chip = 1; }
+  if (q >= 4.3 && q < 8) { const k = Math.floor((q - 4.3) / .45) % 2; mode = k ? 'forecast' : 'aerial'; chip = k ? 2 : 0; }
+  layer(1, () => {
+    screenChrome(190, 60, 900, 'Shade Routes · Map', ['Aerial survey', 'Maintenance log', 'Shade forecast'], chip);
+    ctx.save(); ctx.translate(265, 105); ctx.scale(.75, .75);
+    if (mode === 'log') {
+      ctx.fillStyle = '#fbfaf7'; ctx.fillRect(0, 0, 1000, 600);
+      ctx.font = '600 24px ' + UI; ctx.fillStyle = '#22252b'; ctx.fillText('Maintenance log', 30, 60);
+      ctx.font = '22px ' + UI; ctx.fillStyle = '#4a4d55';
+      ['Street tree, avenue, by bench', 'Status: removed', 'Reason: disease, risk of falling', 'Removed: eleven months ago'].forEach((t, i) => ctx.fillText(t, 30, 120 + i * 44));
+    } else drawMap({ mode });
+    ctx.restore();
+    const ex = 960, ey = 520;
+    if (q > 8.3) {
+      ctx.fillStyle = '#e04b3a'; roundRect(ex - 70, ey - 18, 140, 36, 8); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = '600 15px ' + UI; ctx.fillText('Mark removed', ex - 52, ey + 5);
+    }
+    const cx = K(q, [[8.4, 700], [9.4, ex + 4], [11.3, ex + 4], [11.6, ex - 10], [12.4, 820]]), cy = K(q, [[8.4, 300], [9.4, ey + 2], [11.3, ey + 2], [11.6, ey - 6], [12.4, 430]]);
+    cursor(cx + (q > 9.4 && q < 11.3 ? Math.sin(q * 9) * 1.5 : 0), cy, false);
+  });
+}
+function shotPhoto(u) {
+  const f = ease(seg(u, .3, 6));
+  CAM = { x: lerp(640, 470, f), y: lerp(380, 500, f), z: lerp(1.15, 3.4, f) };
+  office(u);
+  layer(1, () => { screenChrome(190, 60, 900, 'Shade Routes · Feedback', ['Inbox', 'Map'], 0); photo(230, 250, 420, 260); });
+}
+
+function benchScene(q, o) {
+  layer(1, () => {
+    stump();
+    if (o.sapling) sapling();
+    benchBack();
+    benchSeat();
+    const rs = [];
+    if (o.mara) rs.push(['m', person(MAPPER, o.mara)]);
+    if (o.spare === 'furled') furled(735, 514, -.5, 6400);
+    const ro = person(OLD, o.old);
+    const umbs = o.umbs || [[800, 430]];
+    for (const [x, y, b] of umbs) umbrellaShade(x, y - 150, b || FLOOR + 20);
+    for (const [x, y] of umbs) umbrella(x, y, 6500 + x);
+    if (o.after) o.after(ro, rs);
+  });
+}
+function oldIdle(q, head = 0) { return { x: 805, y: SEAT, dir: -1, s: 1.05, lean: .1 + Math.sin(q * 1.6) * .01, head, handF: [770, 500], handB: [760, 508] }; }
+
+function shotArrive(u) {
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 620], [14, 620]]), y: K(u, [[0, 400], [14, 460]]), z: K(u, [[0, 1.08], [14, 1.32]]) };
+  streetBG(u);
+  const walkF = seg(q, .6, 4.2), mx = lerp(-90, 290, easeOut(walkF) * .25 + walkF * .75);
+  const head = K(q, [[0, .12], [3.6, .12], [4.1, -.12], [10.3, -.12], [10.7, .06], [12.1, .06], [12.4, -.12], [14.2, -.12], [14.8, .1], [18, .12]]);
+  benchScene(q, {
+    old: oldIdle(q, head), spare: 'furled',
+    after: () => {
+      const st = walkF > 0 && walkF < 1;
+      const lift = K(q, [[0, 0], [11.9, 0], [12.2, -14], [13.6, -14], [14, 0]]);
+      const o = { ...MAPPER, seated: false, x: mx, y: 511, s: 1.02, dir: 1, hem: 22, stride: st ? 1 : 0, walk: mx / 17,
+        lean: st ? .06 : 0, head: K(q, [[0, 0], [4.2, 0], [4.6, -.05]]), handF: [mx + 30, 470 + lift], handB: null };
+      const r = rig(o); drawPerson(o, r); tabletHeld([r.armF[2][0] + 4, r.armF[2][1] - 6], .3, 6600);
+    }
+  });
+}
+
+function shotScreen(u) {
+  const q = twos(u);
+  CAM = { x: 700, y: 470, z: 1.5 };
+  const focus = ease(seg(u, 10.1, 11));
+  ctx.save(); ctx.filter = `blur(${lerp(4, 0, focus)}px)`;
+  streetBG(u);
+  benchScene(q, { old: oldIdle(q, K(q, [[0, .05], [6, .05], [6.3, -.1], [10, -.1], [10.3, .15]])), spare: 'furled' });
+  ctx.restore();
+  layer(1.15, () => {
+    ctx.save(); ctx.filter = `blur(${lerp(0, 3, focus)}px)`;
+    ctx.translate(585, 455); ctx.rotate(-.03 + Math.sin(q * 1.2) * .004);
+    ink([[-270, -180], [270, -180], [270, 180], [-270, 180]], { fill: '#1d2025', sharp: true, id: 6700, w: 2 });
+    ctx.save(); ctx.beginPath(); ctx.rect(-250, -160, 500, 320); ctx.clip();
+    ctx.fillStyle = '#f2ecdc'; ctx.fillRect(-250, -160, 500, 320);
+    ctx.scale(1.0, 1.0); ctx.translate(-620, -440);
+    stump();
+    // the tree the forecast still believes in
+    ctx.save(); ctx.globalAlpha = .55;
+    ink([[373, 424], [377, 330], [395, 330], [399, 424]], { fill: '#6d8a5a', sharp: true, id: 6710, w: 1.5, stroke: '#4a6a3a' });
+    ink(ellPts([470, 290], 230, 120, 16), { fill: '#7fb07a', id: 6711, w: 2, stroke: '#4a6a3a' });
+    ctx.restore();
+    benchBack(); benchSeat();
+    person(OLD, oldIdle(q, K(q, [[0, .05], [6, .05], [6.3, -.1], [10, -.1], [10.3, .15]])));
+    ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.fillStyle = 'rgba(70,130,90,.5)';
+    ctx.beginPath(); ctx.ellipse(700, 540, 230, 70, 0, 0, 7); ctx.fill(); ctx.restore();
+    ctx.save(); ctx.setLineDash([14, 10]); ctx.lineWidth = 7; ctx.strokeStyle = '#2f6fd6'; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(380, 640); ctx.lineTo(990, 600); ctx.stroke(); ctx.restore();
+    ctx.restore();
+    ctx.fillStyle = 'rgba(255,255,255,.9)'; roundRect(-236, -148, 150, 30, 8); ctx.fill();
+    ctx.fillStyle = '#2f7a46'; ctx.font = '600 15px ' + UI; ctx.fillText('Shade: 94%', -224, -128);
+    ink([[-300, -40], [-262, -50], [-250, 0], [-262, 40], [-300, 50]], { fill: SKIN, id: 6720, w: 2 });
+    ink([[300, -30], [262, -40], [252, 0], [262, 36], [300, 46]], { fill: SKIN, id: 6721, w: 2 });
+    ctx.restore();
+  });
+}
+
+function shotBench(u) {
+  const q = twos(u);
+  CAM = { x: 670, y: 470, z: K(u, [[0, 1.5], [11.6, 1.55], [15.4, 1.62], [20, 1.62]]) };
+  streetBG(u);
+  const hop = K(q, [[0, 0], [9.5, 0], [9.65, -9], [10, -3], [10.3, 0]]);
+  const showing = K(q, [[0, 0], [3.8, 0], [4.4, 1], [6.6, 1], [7.1, 0]]);
+  const gesture = K(q, [[0, 0], [11.9, 0], [12.4, 1], [14.8, 1], [15.3, 0]]);
+  benchScene(q, {
+    spare: 'furled',
+    mara: { x: 535, y: SEAT + hop, dir: 1, s: 1.02,
+      lean: K(q, [[0, .06], [11.9, .06], [12.4, .18], [15.2, .18], [15.5, .02], [17.5, -.04]]),
+      head: K(q, [[0, 0], [9.5, 0], [9.65, -.12], [10.3, 0], [17.4, 0], [17.7, -.08]]),
+      handF: [lerp(lerp(575, 650, showing), 610, gesture), lerp(lerp(500, 455, showing), 470, gesture)], handB: [560, 508] },
+    old: { ...oldIdle(q), lean: K(q, [[0, .1], [4.3, .1], [4.8, .2], [6.6, .2], [7, .1]]),
+      head: K(q, [[0, .1], [3.6, .1], [6.9, .12], [7.3, -.35], [9, -.35], [9.4, .05], [15.4, .05], [15.55, .32], [15.72, -.02], [15.9, .22], [16.15, .04]]),
+      handB: K(q, [[0, [700, 510]], [3.6, [700, 510]], [4, [760, 508]]]) },
+    after: (ro) => {
+      const m = rig({ ...MAPPER, x: 535, y: SEAT + hop, dir: 1, s: 1.02, lean: 0, handF: [lerp(lerp(575, 650, showing), 610, gesture), lerp(lerp(500, 455, showing), 470, gesture)] });
+      tabletHeld([m.armF[2][0] + 6, m.armF[2][1] - 8], lerp(.4, -.2, showing), 6800);
+      if (q > 9 && q < 12) {
+        ctx.save(); ctx.strokeStyle = 'rgba(255,240,200,.6)'; ctx.lineWidth = 2;
+        for (let k = 0; k < 4; k++) { const x0 = 480 + k * 22; ctx.beginPath(); for (let i = 0; i < 6; i++) { const y = 505 - i * 8 - ((q * 30) % 8), x = x0 + Math.sin(i + q * 8 + k) * 3; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke(); }
+        ctx.restore();
+      }
+    }
+  });
+}
+
+function tabletClose(u, draw, opt = {}) {
+  const q = twos(u);
+  layer(.7, () => { ctx.save(); ctx.filter = 'blur(5px)'; ctx.fillStyle = '#ebdfc5'; ctx.fillRect(-300, -300, W + 600, H + 600); dabs(-200, -200, W + 400, H + 400, '#d3bf8e', 30, 1501, 40, 120, .5); ctx.fillStyle = 'rgba(61,111,176,.35)'; ctx.fillRect(900, -300, 600, 400); ctx.restore(); });
+  layer(1, () => {
+    ctx.save(); ctx.translate(640, 370); ctx.rotate(-.015 + Math.sin(q * 1.1) * .003);
+    ink([[-460, -290], [460, -290], [460, 290], [-460, 290]], { fill: '#1d2025', sharp: true, id: 6900, w: 2.5 });
+    ctx.save(); ctx.beginPath(); ctx.rect(-435, -265, 870, 530); ctx.clip();
+    ctx.fillStyle = '#fbfaf7'; ctx.fillRect(-435, -265, 870, 530);
+    screenChrome(-435, -265, 870, 'Shade Routes', opt.chips || ['Shade forecast'], opt.chip ?? 0);
+    ctx.save(); ctx.translate(-425, -220); ctx.scale(.85, .81); draw(q); ctx.restore();
+    ctx.restore();
+    ink([[-520, 120], [-470, 100], [-440, 140], [-450, 200], [-520, 230]], { fill: SKIN, id: 6910, w: 2 });
+    ink([[520, 130], [470, 110], [442, 150], [452, 210], [520, 236]], { fill: SKIN, id: 6911, w: 2 });
+    ctx.restore();
+  });
+}
+function shotReroute(u) {
+  CAM = { x: 640, y: 370, z: 1.02 };
+  const q = twos(u);
+  tabletClose(u, (q) => {
+    drawMap({ mode: 'forecast', gap: ease(seg(q, 3.6, 5.2)), reroute: ease(seg(q, 5, 7.2)) });
+    const bx = 790, by = 290;
+    if (q < 3.6) { ctx.fillStyle = '#e04b3a'; roundRect(bx, by, 170, 44, 10); ctx.fill(); ctx.fillStyle = '#fff'; ctx.font = '600 19px ' + UI; ctx.fillText('Mark removed', bx + 22, by + 29); }
+    if (q > 5.2 && q < 7.6) { ctx.fillStyle = 'rgba(34,37,43,.85)'; roundRect(30, 520, 300, 44, 10); ctx.fill(); ctx.fillStyle = '#fff'; ctx.font = '17px ' + UI; ctx.fillText('Forecast updated. New route.', 48, 548); }
+  });
+  layer(1.15, () => {
+    const press = q > 1.9 && q < 2.3;
+    const tx = K(q, [[0, 1150], [1.2, 1150], [1.85, 905], [2.5, 915], [3.2, 1180]]), ty = K(q, [[0, 820], [1.2, 820], [1.85, 384], [2.5, 398], [3.2, 820]]);
+    limb([[tx + 70, ty + 140], [tx + 150, ty + 300], [tx + 230, ty + 480]], 70, MAPPER.c, 6922);
+    ink([[tx + 30, ty + 60], [tx + 80, ty + 50], [tx + 118, ty + 92], [tx + 104, ty + 150], [tx + 50, ty + 160], [tx + 20, ty + 110]], { fill: SKIN, id: 6923, w: 2 });
+    limb([[tx + 40, ty + 70], [tx + 4, ty + 6]], 20, SKIN, 6920);
+    ink(ellPts([tx, ty], press ? 15 : 12, press ? 9 : 12, 10), { fill: SKIN, id: 6921, w: 2 });
+    if (press) { ctx.strokeStyle = 'rgba(47,111,214,.6)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(tx, ty, 26 + (q - 1.9) * 60, 0, 7); ctx.stroke(); }
+    if (q > 7) {
+      const e = ease(seg(q, 7, 7.8));
+      const o = { ...OLD, seated: false, x: 1330, y: lerp(820, 560, e), s: 3, dir: -1, lean: .55, head: .25 };
+      const r = rig(o); drawHead(o, r, 7100); moustache(r);
+    }
+  });
+}
+
+function shotTalk(u) {
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 690], [13, 720]]), y: 460, z: K(u, [[0, 1.6], [13, 1.75]]) };
+  streetBG(u);
+  benchScene(q, {
+    spare: 'furled',
+    mara: { x: 535, y: SEAT, dir: 1, s: 1.02, lean: K(q, [[0, .05], [3.2, .05], [3.5, .12], [4.4, .05], [7.5, .05], [7.8, .12], [8.6, .05]]),
+      head: K(q, [[0, 0], [3.3, 0], [3.5, .15], [3.8, 0], [7.6, 0], [7.8, .12], [8.2, 0]]), handF: [575, 500], handB: [560, 508] },
+    old: { ...oldIdle(q), head: K(q, [[0, -.05], [5.3, -.05], [5.6, .25], [7.4, .25], [7.8, .05], [9.1, .05], [9.5, .18]]),
+      handF: K(q, [[0, [770, 500]], [.3, [770, 500]], [.8, [720, 470]], [2.8, [720, 470]], [3.3, [770, 500]]]) },
+    after: () => tabletHeld([600, 494], .4, 6800)
+  });
+}
+
+function shotRequest(u) {
+  const q = twos(u);
+  CAM = { x: 640, y: 300, z: lerp(1.08, 1.16, ease(u / 11)) };
+  office(u);
+  layer(1, () => {
+    screenChrome(190, 60, 900, 'Change request', ['Draft', 'Submitted'], q > 4.3 ? 1 : 0);
+    ctx.font = '15px ' + UI; ctx.fillStyle = '#6a6d75';
+    ctx.fillText('To: Map data · Public application', 230, 135);
+    ctx.font = '24px ' + UI; ctx.fillStyle = '#22252b';
+    const L1a = 'Let removed trees ', L1b = 'remain visible', L1c = ' in the historical', L2 = 'view, with dates. No shadows in the present.', L3 = 'No shelter promised.';
+    const full = L1a + L1b + L1c + '\n' + L2 + '\n' + L3;
+    const n = Math.floor(full.length * seg(q, .5, 4.2));
+    const shown = full.slice(0, n).split('\n');
+    shown.forEach((t, i) => ctx.fillText(t, 230, 230 + i * 44));
+    const sx = 230 + ctx.measureText(L1a).width, sw = ctx.measureText(L1b).width;
+    const st = seg(q, 5.4, 6.1);
+    if (st > 0) {
+      ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(sx, 222); ctx.lineTo(sx + sw * st, 220); ctx.stroke();
+      ctx.save(); ctx.font = '30px ' + HAND; ctx.fillStyle = '#c0392b';
+      writeOn('retain records', sx + 4, 192, ease(seg(q, 6.1, 7.1))); ctx.restore();
+    }
+    const sc = K(q, [[7.5, 0], [7.62, 1.6], [7.78, .9], [7.95, 1.04], [8.1, 1]], t => t);
+    if (q > 7.5) {
+      ctx.save(); ctx.translate(820, 430); ctx.rotate(-.12); ctx.scale(sc, sc); ctx.globalAlpha = .85;
+      ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 5; ctx.strokeRect(-120, -36, 240, 72);
+      ctx.fillStyle = '#c0392b'; ctx.font = '700 38px ' + UI; ctx.textAlign = 'center'; ctx.fillText('APPROVED', 0, 14);
+      ctx.restore();
+    }
+  });
+}
+
+function shotSapling(u) {
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 980], [2.6, 980], [6.5, 700]]), y: 460, z: K(u, [[0, 1.6], [2.6, 1.6], [6.5, 1.3]]) };
+  streetBG(u);
+  benchScene(q, {
+    sapling: true, umbs: [[740, 430], [860, 430]],
+    mara: { x: 535, y: SEAT, dir: 1, s: 1.02, lean: .05, head: 0, handF: [575, 500], handB: [560, 508] },
+    old: oldIdle(q, -.02),
+    after: () => tabletHeld([600, 494], .4, 6800)
+  });
+}
+function shotPinch(u) {
+  CAM = { x: 640, y: 370, z: 1.02 };
+  const q = twos(u);
+  const spread = K(q, [[0, 0], [1.8, 0], [3.2, 1], [8.9, 1], [9.6, 1.35]]);
+  tabletClose(u, () => drawMap({ mode: 'hist', zoom: 1 + spread * 1.2 }), { chips: ['Historical'], chip: 0 });
+  layer(1.15, () => {
+    const c = [-425 + TARGET[0] * .85 + 640, -220 + TARGET[1] * .81 + 370];
+    // thumb and finger sit on the dotted circle as it grows
+    const d = 46 * .83 * (1 + spread * 1.2) + 4;
+    const enter = ease(seg(q, .4, 1.6)), off = (1 - enter) * 420;
+    const f1 = [c[0] - d * .55 + off, c[1] + d * .83 + off], f2 = [c[0] + d * .83 + off, c[1] - d * .55 + off];
+    const hand = [Math.max(f1[0], f2[0]) + 40, Math.max(f1[1], f2[1]) + 40];
+    limb([[hand[0] + 30, hand[1] + 30], [hand[0] + 200, hand[1] + 240]], 76, OLD.c, 7200);
+    limb([[hand[0] - 10, hand[1] + 10], f1], 20, OLD.skin, 7202);
+    limb([[hand[0] + 6, hand[1] - 14], f2], 17, OLD.skin, 7203);
+    ink(ellPts(hand, 50, 40, 12), { fill: OLD.skin, id: 7201, w: 2 });
+  });
+}
+
+function shotGift(u) {
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 720], [14.5, 720], [22, 520]]), y: 450, z: K(u, [[0, 1.22], [14.5, 1.28], [22, 1.2]]) };
+  streetBG(u);
+  // the woman with the walker
+  const wx = K(q, [[0, 1500], [.8, 1500], [6, 975], [15, 975], [22, 420]], t => t);
+  const moving = (q > .8 && q < 6) || q > 15;
+  const hip = 615 - 104 * .98;
+  const phone = K(q, [[0, 0], [6.4, 0], [6.9, 1], [8.3, 1], [8.7, 0]]);
+  // the spare umbrella's journey: bench clamp, his hands, her walker
+  const clampW = [wx - 30 - 40, hip - 8 + 4];
+  let base;
+  if (q < 11.2) base = [860, 430];
+  else if (q < 12.2) base = mix([860, 430], [880, 372], ease(seg(q, 11.2, 12.2)));
+  else if (q < 13.6) base = mix([880, 372], clampW, ease(seg(q, 12.2, 13.6)));
+  else base = clampW;
+  const reach = q > 10.6 && q < 13.9;
+  benchScene(q, {
+    sapling: true, umbs: [[740, 430]],
+    mara: { x: 535, y: SEAT, dir: 1, s: 1.02, lean: .05, head: K(q, [[0, 0], [4, 0], [4.6, -.08]]), handF: [575, 500], handB: [560, 508] },
+    old: { x: 805, y: SEAT, dir: 1, s: 1.05, lean: K(q, [[0, .1], [10.4, .1], [11, .2], [12.4, .42], [13.9, .42], [14.6, .12]]),
+      head: K(q, [[0, .05], [5.5, .05], [6, -.08], [10.4, -.08], [10.8, -.15], [12, .05]]),
+      handF: reach ? [base[0] - 2, base[1] - 34] : [840, 500], handB: [830, 508] },
+    after: () => {
+      umbrellaShade(base[0], base[1] - 150, q >= 13.6 ? 630 : FLOOR + 20);
+      const o = { ...WALKER, seated: false, x: wx, y: hip, s: .98, dir: -1, stride: moving ? .55 : 0, walk: wx / 14,
+        lean: K(q, [[0, .22], [8.3, .22], [8.8, .12], [10.2, .12], [10.6, .2]]), head: K(q, [[0, .05], [8.4, .05], [8.8, -.14], [10.2, -.14], [10.6, .12], [14, .12], [14.3, .2], [14.6, .1]]),
+        handF: phone > .5 ? [wx - 30, hip - 64] : [wx - 30, hip - 8], handB: [wx - 26, hip - 6] };
+      const r = rig(o);
+      walker(wx - 30, hip - 8, 615, 7300);
+      drawPerson(o, r);
+      if (phone > .5) tabletHeld([r.armF[2][0] - 4, r.armF[2][1] - 6], -.2, 7310);
+      umbrella(base[0], base[1], 7400, reach ? Math.sin(q * 3) * .04 : 0);
+    }
+  });
+}
+
+// ---------- the exposure sheet ----------
+const SHOTS = [
+  { dur: 5, draw: shotTitle, caps: [] },
+  { dur: 8, draw: shotComplaint, caps: [[.3, 3.6, 'The complaint arrived during the first hot week.'], [4, 7.6, 'Attached was a photograph of a bench in white sunlight. Behind it stood a stump, cut so neatly that it resembled a small table.']] },
+  { dur: 13, draw: shotLayers, caps: [[.3, 4, 'Mara worked in municipal mapping. She checked the aerial survey, the maintenance log, and the forecast service that calculated shadows.'], [4.3, 8, 'The tree had been removed eleven months earlier. One database knew; another did not.'], [8.4, 12.4, 'She could fix it before lunch.']] },
+  { dur: 7, draw: shotPhoto, caps: [[.4, 6.4, 'Instead, because the photograph showed a person’s shoes at its lower edge, she went to look.']] },
+  { dur: 18, draw: shotArrive, caps: [[.3, 4.2, 'An old man sat on the bench beneath a square of portable shade: a blue umbrella clamped to its back. He had brought a second umbrella, folded beside him.'], [4.5, 6.6, '“Did you send the complaint?” Mara asked.'], [6.8, 8, '“Yes.”'], [8.3, 10.3, '“I’m here to remove the tree.”'], [12, 13.7, '“From the map,” she added.'], [14.2, 17.4, '“That’ll be twice, then.”']] },
+  { dur: 12, draw: shotScreen, caps: [[.3, 3.5, 'She opened her tablet. On its screen, the tree’s shadow lay across his knees.'], [3.8, 6, '“The route planner thinks it’s still here,” she said.'], [6.2, 7.9, '“I know. I follow the route.”'], [8.1, 10, '“Even though you know it’s wrong?”'], [10.2, 11.8, '“Especially then.”']] },
+  { dur: 20, draw: shotBench, caps: [[.3, 3.6, 'His wife had liked this bench. That was all he said about her.'], [3.9, 6.6, 'She showed him the maintenance record. Disease, risk of falling, removal authorised.'], [6.9, 9, '“Yes,” he said. “I was here for that too.”'], [9.3, 11.6, 'Mara sat at the uncovered end of the bench. The slats were hot through her trousers.'], [11.9, 15.3, '“If I leave it, someone might come this way expecting shelter. Someone who can’t walk much farther.”'], [15.5, 17.3, 'He nodded immediately. “Then you must fix it.”'], [17.5, 19.8, 'She had expected an argument and found herself unprepared for permission.']] },
+  { dur: 11, draw: shotReroute, caps: [[.3, 3.4, 'On the tablet, she changed the tree’s status.'], [3.6, 7.4, 'The forecast refreshed. Its green corridor broke apart; the recommended route moved two streets west, beneath the pharmacy awning.'], [7.8, 9.2, '“Very quick,” he said.'], [9.4, 10.7, '“Yes.”']] },
+  { dur: 13, draw: shotTalk, caps: [[.3, 3, '“Is there somewhere you can put what was here?”'], [3.3, 5, '“I can ask.”'], [5.4, 7.3, '“Don’t put my wife in it.”'], [7.6, 8.8, '“I won’t.”'], [9.2, 11.2, '“Just the tree.”']] },
+  { dur: 11, draw: shotRequest, caps: [[.3, 4.2, 'That afternoon Mara submitted a modest request.'], [4.6, 10.6, 'It was approved six weeks later, after someone changed remain visible to retain records.']] },
+  { dur: 7, draw: shotSapling, caps: [[.3, 3.4, 'By then, a sapling had been planted beyond the bench. Its two stakes cast more shade than its leaves.'], [3.7, 6.7, 'Mara visited again. The old man was there, with both umbrellas open.']] },
+  { dur: 12, draw: shotPinch, caps: [[.3, 3, 'She showed him the new layer. A dotted circle marked the former canopy.'], [3.3, 5, '“It was bigger,” he said.'], [5.3, 7.3, '“That’s the survey measurement.”'], [7.6, 8.8, 'He considered this.'], [9, 11.6, '“Perhaps it felt bigger.”']] },
+  { dur: 22, draw: shotGift, caps: [[.3, 3.4, 'They sat for a while.'], [4, 9.6, 'A woman pushing a walker stopped beside them, checked her phone, and looked toward the pharmacy.'], [10.2, 12.8, 'The old man lifted the spare umbrella from the bench.'], [13.2, 16.6, '“Here,” he said. “Until you get there.”']] },
+];
+// Reading time: every caption stays up long enough to read (about 175 words a minute).
+// Where the action under a caption is shorter than that, it first plays slower (up to
+// STRETCH times), then holds its last pose for whatever time is still needed.
+const READ = text => 1.2 + text.split(/\s+/).length / 2.9, STRETCH = 1.5;
+for (const S of SHOTS) {
+  const knots = [[0, 0]]; let real = 0, story = 0;
+  S.realCaps = [];
+  for (const [a, b, text] of S.caps) {
+    real += a - story; story = a; knots.push([story, real]);
+    const ra = real, avail = b - a, need = READ(text), k = Math.min(STRETCH, Math.max(1, need / avail));
+    real += avail * k; story = b; knots.push([story, real]);
+    if (need > avail * k) { real += need - avail * k; knots.push([story, real]); }
+    S.realCaps.push([ra, real, text]);
+  }
+  real += S.dur - story; knots.push([S.dur, real]);
+  S.knots = knots; S.real = real;
+}
+// Map time on the screen to time in the shot's own action.
+function storyTime(S, r) {
+  const k = S.knots;
+  for (let i = 1; i < k.length; i++) if (r <= k[i][1]) { const [s0, r0] = k[i - 1], [s1, r1] = k[i]; return r1 > r0 ? s0 + (s1 - s0) * (r - r0) / (r1 - r0) : s1; }
+  return S.dur;
+}
+const TOTAL = SHOTS.reduce((a, s) => a + s.real, 0);
+
+function wrap(text, max) {
+  const words = text.split(' '), lines = []; let line = '';
+  for (const w of words) { const t = line ? line + ' ' + w : w; if (ctx.measureText(t).width > max && line) { lines.push(line); line = w; } else line = t; }
+  if (line) lines.push(line);
+  return lines;
+}
+function caption(text, a) {
+  ctx.save(); ctx.globalAlpha = a;
+  const g = ctx.createLinearGradient(0, H - 200, 0, H); g.addColorStop(0, 'rgba(15,12,10,0)'); g.addColorStop(.5, 'rgba(15,12,10,.5)'); g.addColorStop(1, 'rgba(15,12,10,.75)');
+  ctx.fillStyle = g; ctx.fillRect(0, H - 200, W, 200);
+  ctx.font = 'italic 27px ' + SERIF; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  const lines = wrap(text, 1000); let y = H - 46 - (lines.length - 1) * 36;
+  ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 8; ctx.fillStyle = '#f5ecdb';
+  for (const l of lines) { ctx.fillText(l, W / 2, y); y += 36; }
+  ctx.restore();
+}
+const GRAIN = [0, 1, 2].map(k => {
+  const c = document.createElement('canvas'); c.width = 320; c.height = 180;
+  const g = c.getContext('2d'), im = g.createImageData(320, 180), r = R(55 + k);
+  for (let i = 0; i < im.data.length; i += 4) { const v = 205 + r() * 50; im.data[i] = v; im.data[i + 1] = v * .985; im.data[i + 2] = v * .95; im.data[i + 3] = 255; }
+  g.putImageData(im, 0, 0); return c;
+});
+
+function render(t) {
+  BOIL = Math.floor(t * 8);
+  let acc = 0, i = 0;
+  while (i < SHOTS.length - 1 && t >= acc + SHOTS[i].real) { acc += SHOTS[i].real; i++; }
+  const S = SHOTS[i], r = t - acc, u = storyTime(S, r);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cvs.width, cvs.height);
+  ctx.setTransform(VIEW.k, 0, 0, VIEW.k, VIEW.ox, VIEW.oy);
+  ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
+  ctx.save(); S.draw(u); ctx.restore();
+  ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.globalAlpha = .45; ctx.drawImage(GRAIN[BOIL % 3], 0, 0, W, H); ctx.restore();
+  const v = ctx.createRadialGradient(W / 2, H / 2, H * .45, W / 2, H / 2, H * 1.05);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(10,6,3,.45)'); ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+  const fade = Math.max(0, 1 - r / .5, 1 - (S.real - r) / .5);
+  if (fade > 0) { ctx.fillStyle = `rgba(18,15,12,${fade})`; ctx.fillRect(0, 0, W, H); }
+  for (const [a, b, text] of S.realCaps) {
+    if (r > a && r < b) caption(text, Math.min(1, (r - a) / .35, (b - r) / .35));
+  }
+  ctx.restore();
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2), cw = innerWidth, ch = innerHeight;
+  cvs.width = Math.round(cw * dpr); cvs.height = Math.round(ch * dpr);
+  cvs.style.width = cw + 'px'; cvs.style.height = ch + 'px';
+  const k = Math.min(cw / W, ch / H) * dpr;
+  VIEW = { k, ox: (cvs.width - W * k) / 2, oy: (cvs.height - H * k) / 2 };
+}
+const FIX = new URLSearchParams(location.search).get('t');
+if (new URLSearchParams(location.search).has('debug')) { let a = 0; console.log('TOTAL ' + TOTAL.toFixed(1) + ' starts ' + SHOTS.map(S => { const x = a; a += S.real; return x.toFixed(1); }).join(',')); }
+let clock = 0, last = null, paused = false;
+let ended = false;
+function frame(now) {
+  if (last !== null && !paused && !ended) clock += Math.min(.1, (now - last) / 1000);
+  last = now;
+  if (clock >= TOTAL - .001) { clock = TOTAL - .001; ended = true; }
+  render(clock);
+  if (ended) endCard();
+  requestAnimationFrame(frame);
+}
+// The film plays once and stops on its last (faded) frame with an offer to watch again.
+function endCard() {
+  ctx.setTransform(VIEW.k, 0, 0, VIEW.k, VIEW.ox, VIEW.oy);
+  ctx.save(); ctx.font = 'italic 34px ' + SERIF; ctx.textAlign = 'center'; ctx.fillStyle = '#f5ecdb';
+  ctx.fillText('\u21bb  Watch again', W / 2, H / 2 + 12); ctx.restore();
+}
+function toggle() { if (ended) { clock = 0; ended = false; paused = false; } else paused = !paused; }
+addEventListener('resize', () => { resize(); if (FIX !== null) render(parseFloat(FIX)); });
+addEventListener('click', toggle);
+addEventListener('keydown', e => { if (e.key === ' ') { toggle(); e.preventDefault(); } });
+resize();
+// A held frame is redrawn for its first second, in case the page is still being sized.
+let held = 0;
+function hold() { resize(); render(parseFloat(FIX)); if (++held < 60) requestAnimationFrame(hold); }
+if (FIX !== null) hold(); else requestAnimationFrame(frame);
+</script>
+</body>
+</html>

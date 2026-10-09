@@ -45,8 +45,6 @@ If an animation was made elsewhere:
 
    `slug` must match the folder name. For a video, use `"type": "video"` and `"file": "frog.mp4"`. `poster`, `model`, `date`, `prompt`, `notes`, `aspect` and `previewTime` are optional. Without a poster, the gallery card plays the animation itself; for an HTML animation that supports `?t=` (holding one frame), `previewTime` shows a still from that second instead.
 
-The example animation in `animations/example-bouncing-ball/` is a hand-made placeholder for testing the site. Delete its folder and its entry in `animations.json` once real animations are in.
-
 ## Previewing locally
 
 The pages load `animations.json` and `prompt.txt`, which browsers block when a file is opened straight from disk. Run a local server from this folder instead:

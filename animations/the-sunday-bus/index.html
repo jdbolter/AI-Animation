@@ -1,0 +1,970 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Sunday Bus</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    canvas { display: block; cursor: pointer; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// The Sunday Bus: a multiplane cartoon drawn in canvas.
+// Characters and effects are drawn "on twos" (12 drawings a second) with boiling ink lines;
+// backgrounds are painted once and stay still; the camera moves smoothly through the planes.
+// Add ?t=SECONDS to the URL to hold a single frame. Click to pause; it plays once, then click to watch again.
+
+const W = 1280, H = 720;
+const cvs = document.getElementById('c');
+let ctx = cvs.getContext('2d');
+let VIEW = { k: 1, ox: 0, oy: 0 };
+
+const INK = '#2a2420', SKIN = '#e9c9a8';
+const HAND = '"Snell Roundhand","Apple Chancery","Segoe Script","Brush Script MT",cursive';
+const SERIF = '"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif';
+
+// ---------- math ----------
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, f) => a + (b - a) * f;
+const ease = f => { f = clamp(f); return f * f * (3 - 2 * f); };
+const easeOut = f => { f = clamp(f); return 1 - (1 - f) ** 3; };
+const seg = (u, a, b) => clamp((u - a) / (b - a));
+const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+const twos = u => Math.floor(u * 12) / 12;
+function mix(a, b, f) { return Array.isArray(a) ? a.map((x, i) => x + (b[i] - x) * f) : a + (b - a) * f; }
+// Exposure-sheet keys: [[time, value], ...], eased between neighbours.
+function K(u, keys, e = ease) {
+  if (u <= keys[0][0]) return keys[0][1];
+  for (let i = 1; i < keys.length; i++) {
+    if (u < keys[i][0]) {
+      const [a, va] = keys[i - 1], [b, vb] = keys[i];
+      return mix(va, vb, e((u - a) / (b - a)));
+    }
+  }
+  return keys[keys.length - 1][1];
+}
+function R(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function shade(h, a) {
+  const n = parseInt(h.slice(1), 16);
+  let r = n >> 16, g = n >> 8 & 255, b = n & 255;
+  const t = a < 0 ? 0 : 255, p = Math.abs(a);
+  r = Math.round(r + (t - r) * p); g = Math.round(g + (t - g) * p); b = Math.round(b + (t - b) * p);
+  return `rgb(${r},${g},${b})`;
+}
+
+// ---------- ink ----------
+let BOIL = 0;
+function jitterPts(pts, amt, r) { return pts.map(p => [p[0] + (r() - .5) * 2 * amt, p[1] + (r() - .5) * 2 * amt]); }
+function tracePath(p, close, sharp) {
+  ctx.beginPath();
+  if (sharp || p.length < 3) {
+    ctx.moveTo(p[0][0], p[0][1]);
+    for (let i = 1; i < p.length; i++) ctx.lineTo(p[i][0], p[i][1]);
+    if (close) ctx.closePath();
+    return;
+  }
+  if (close) {
+    const n = p.length; const m = mid(p[n - 1], p[0]);
+    ctx.moveTo(m[0], m[1]);
+    for (let i = 0; i < n; i++) { const q = p[i], m2 = mid(q, p[(i + 1) % n]); ctx.quadraticCurveTo(q[0], q[1], m2[0], m2[1]); }
+    ctx.closePath();
+  } else {
+    ctx.moveTo(p[0][0], p[0][1]);
+    for (let i = 1; i < p.length - 1; i++) { const m = mid(p[i], p[i + 1]); ctx.quadraticCurveTo(p[i][0], p[i][1], m[0], m[1]); }
+    const l = p[p.length - 1]; ctx.lineTo(l[0], l[1]);
+  }
+}
+// A hand-inked shape. Fill and line get separate jitter, like paint laid under a drawn line.
+// Lines "boil" (redraw slightly differently) unless o.still is set.
+function ink(pts, o = {}) {
+  const id = o.id || 1, j = o.j ?? 1.1, seed = o.still ? id * 7919 : id * 7919 + BOIL * 104729;
+  const close = o.close ?? !!o.fill;
+  if (o.fill) { tracePath(jitterPts(pts, j * .8, R(seed + 17)), true, o.sharp); ctx.fillStyle = o.fill; ctx.fill(); }
+  if (o.stroke !== false) {
+    tracePath(jitterPts(pts, j, R(seed)), close, o.sharp);
+    ctx.strokeStyle = o.stroke || INK; ctx.lineWidth = o.w || 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.stroke();
+  }
+}
+function ellPts(c, rx, ry, n = 12) { const p = []; for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; p.push([c[0] + Math.cos(a) * rx, c[1] + Math.sin(a) * ry]); } return p; }
+function limb(pts, w, col, id) { ink(pts, { w: w + 3.2, stroke: INK, id }); ink(pts, { w, stroke: col, id }); }
+function hand(p, skin, s, id) { ink(ellPts(p, 5.5 * s, 5 * s, 8), { fill: skin, w: 1.6, id }); }
+function dabs(x, y, w, h, col, n, seed, r0 = 6, r1 = 20, a = .25) {
+  const r = R(seed); ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = col;
+  for (let i = 0; i < n; i++) {
+    const cx = x + r() * w, cy = y + r() * h, rx = lerp(r0, r1, r()), ry = rx * lerp(.3, .7, r());
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, (r() - .5) * .6, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+}
+function writeOn(text, x, y, prog) {
+  const w = ctx.measureText(text).width;
+  if (prog <= 0) return x;
+  ctx.save(); ctx.beginPath(); ctx.rect(x - 6, y - 60, w * prog + 6, 90); ctx.clip(); ctx.fillText(text, x, y); ctx.restore();
+  return x + w * prog;
+}
+
+// ---------- multiplane camera ----------
+// p is the plane's depth factor: 1 = character plane, <1 = farther, >1 = nearer the lens.
+let CAM = { x: W / 2, y: H / 2, z: 1 };
+function layer(p, fn) {
+  ctx.save();
+  const z = 1 + (CAM.z - 1) * p;
+  ctx.translate(W / 2, H / 2); ctx.scale(z, z);
+  ctx.translate(-(W / 2 + (CAM.x - W / 2) * p), -(H / 2 + (CAM.y - H / 2) * p));
+  fn();
+  ctx.restore();
+}
+
+// ---------- characters ----------
+const MARA = { id: 1, c: '#5c7380', legC: '#4d5f6a', hair: 'bun', hairC: '#3b2a22', seated: true };
+const JONAS = { id: 2, c: '#7b5b3e', legC: '#3d3a37', hair: 'short', hairC: '#4a3a2c', glasses: true, seated: true };
+const VALE = { id: 3, c: '#3d4658', legC: '#3a3431', hair: 'bun', hairC: '#aaa49b', skin: '#e4c3a6' };
+const SON_COAT = '#3d4658', VALE_OWN = '#6d4a56';
+
+function ikE(S, T, a, b, bend) {
+  const dx = T[0] - S[0], dy = T[1] - S[1];
+  const dd = clamp(Math.hypot(dx, dy), Math.abs(a - b) + 1, a + b - .5);
+  const ang = Math.atan2(dy, dx);
+  const A = Math.acos(clamp((a * a + dd * dd - b * b) / (2 * a * dd), -1, 1));
+  const e = ang + bend * A;
+  return [S[0] + Math.cos(e) * a, S[1] + Math.sin(e) * a];
+}
+// Build a side-view skeleton. Construction order follows the prompt: line of action (lean),
+// pelvis, ribcage, head, then limbs solved toward hand targets.
+function rig(o) {
+  const s = o.s || 1, d = o.dir || 1, lean = o.lean || 0, hip = [o.x, o.y];
+  const a = d * lean, ca = Math.cos(a), sa = Math.sin(a);
+  const L = (lx, ly) => { const X = d * lx * s, Y = ly * s; return [hip[0] + X * ca - Y * sa, hip[1] + X * sa + Y * ca]; };
+  const sh = L(0, -80), neck = L(2, -90);
+  const ha = d * (lean + (o.head || 0)), ch = Math.cos(ha), shh = Math.sin(ha);
+  const rot = (base, lx, ly) => { const X = d * lx * s, Y = ly * s; return [base[0] + X * ch - Y * shh, base[1] + X * shh + Y * ch]; };
+  const hc = rot(neck, 4, -24);
+  const Hh = (lx, ly) => rot(hc, lx, ly);
+  const legs = [];
+  if (o.seated) {
+    const knee = [hip[0] + d * 50 * s, hip[1] - (o.kneeUp ?? 12) * s];
+    const foot = [knee[0] + d * 6 * s, hip[1] + (o.seatH ?? 48) * s];
+    legs.push([hip, knee, foot], [[hip[0] - d * 4 * s, hip[1]], [knee[0] - d * 8 * s, knee[1] + 2 * s], [foot[0] - d * 12 * s, foot[1]]]);
+  } else {
+    const ph = o.walk || 0, st = o.stride || 0;
+    for (const k of [0, 1]) {
+      const p = ph + k * Math.PI;
+      const a1 = Math.sin(p) * .38 * st;
+      const bend = Math.max(0, Math.sin(p - 1.3)) * .7 * st;
+      const kn = [hip[0] + d * Math.sin(a1) * 50 * s, hip[1] + Math.cos(a1) * 50 * s];
+      const a2 = a1 - bend;
+      legs.push([hip, kn, [kn[0] + d * Math.sin(a2) * 52 * s, kn[1] + Math.cos(a2) * 52 * s]]);
+    }
+  }
+  const up = 44 * s, fo = 42 * s;
+  const arm = (T, sign) => {
+    if (!T) T = [sh[0] + d * (4 + sign * Math.sin(o.walk || 0) * 14 * (o.stride || 0)) * s, sh[1] + 82 * s];
+    const e1 = ikE(sh, T, up, fo, 1), e2 = ikE(sh, T, up, fo, -1);
+    const el = e1[1] > e2[1] ? e1 : e2;
+    const dx = T[0] - el[0], dy = T[1] - el[1], dl = Math.hypot(dx, dy) || 1;
+    return [sh, el, [el[0] + dx / dl * fo, el[1] + dy / dl * fo]];
+  };
+  return { s, d, hip, sh, neck, hc, Hh, L, legs, armF: arm(o.handF, 1), armB: arm(o.handB, -1) };
+}
+function drawHead(o, r, id) {
+  const H = r.Hh, s = r.s, skin = o.skin || SKIN, hc = o.hairC || '#3a2a20';
+  if (o.hair === 'bun') ink(ellPts(H(-19, -8), 9 * s, 9 * s, 10), { fill: hc, id: id + 1, w: 1.6 });
+  ink([H(-18, -2), H(-17, -15), H(-8, -23), H(6, -23), H(15, -16), H(18, -7), H(19, -2), H(24, 5), H(18, 8), H(18, 13), H(13, 19), H(3, 20), H(-9, 15)], { fill: skin, id: id + 2, w: 2 });
+  if (o.hair === 'bun') ink([H(-19, 2), H(-20, -14), H(-10, -24), H(5, -25), H(15, -18), H(8, -16), H(-2, -15), H(-8, -9), H(-12, 3)], { fill: hc, id: id + 3, w: 1.6 });
+  if (o.hair === 'short') ink([H(-19, 3), H(-20, -15), H(-9, -25), H(7, -25), H(17, -17), H(11, -17), H(2, -18), H(-6, -12), H(-10, 2)], { fill: hc, id: id + 3, w: 1.6 });
+  ink(ellPts(H(-5, 1), 3.5 * s, 5.5 * s, 8), { fill: shade(skin, -.1), id: id + 4, w: 1.3 });
+  const e = H(10, -3); ctx.fillStyle = INK; ctx.beginPath(); ctx.arc(e[0], e[1], 1.9 * s, 0, 7); ctx.fill();
+  ink([H(6, -9), H(13, -10)], { w: 1.6 * s, id: id + 5 });
+  ink([H(14, 13), H(17, 13)], { w: 1.3 * s, id: id + 6 });
+  if (o.glasses) { ink(ellPts(H(11, -3), 6 * s, 5 * s, 10), { stroke: '#2a221c', close: true, w: 1.6, id: id + 7 }); ink([H(5, -3), H(-4, -3)], { w: 1.3, id: id + 8 }); }
+  if (o.hat === 'cloche') ink([H(-22, -2), H(-21, -17), H(-11, -28), H(7, -28), H(18, -19), H(25, -9), H(12, -11), H(-6, -9), H(-14, -2)], { fill: o.hatC || '#3e3236', id: id + 9, w: 1.8 });
+  if (o.hat === 'bowler') { ink(ellPts(H(0, -22), 15 * s, 11 * s, 10), { fill: o.hatC || '#1e1c1b', id: id + 9, w: 1.6 }); ink([H(-21, -14), H(22, -14)], { w: 4 * s, stroke: o.hatC || '#1e1c1b', id: id + 10 }); }
+  if (o.hat === 'cap') ink([H(-19, -10), H(-18, -24), H(10, -26), H(18, -14), H(30, -12), H(16, -9), H(-12, -8)], { fill: o.hatC || '#1f2733', id: id + 9, w: 1.6 });
+}
+function drawArmF(o, r) { const id = o.id * 100 + 60; limb(r.armF, 10.5 * r.s, o.sleeve || o.c, id); hand(r.armF[2], o.skin || SKIN, r.s, id + 1); }
+function drawPerson(o, r) {
+  const s = r.s, d = r.d, id = o.id * 100 + 7, skin = o.skin || SKIN, legC = o.legC || '#38332f', sl = o.sleeve || o.c;
+  const shoe = (p, k) => ink(ellPts([p[0] + d * 6 * s, p[1] - 3 * s], 11 * s, 5 * s, 8), { fill: '#1f1b18', id: id + k, w: 1.5 });
+  limb(r.legs[1], 11 * s, shade(legC, -.25), id + 1); shoe(r.legs[1][2], 2);
+  limb(r.armB, 10.5 * s, shade(sl, -.22), id + 3); hand(r.armB[2], shade(skin, -.08), s, id + 4);
+  limb(r.legs[0], 12 * s, legC, id + 5); shoe(r.legs[0][2], 6);
+  limb([r.neck, r.Hh(-3, 16)], 9 * s, skin, id + 8);
+  const hf = o.hem ?? 10, hb = hf + (o.hemSkew || 0), L = r.L;
+  ink([L(-15, hb), L(-18, -28), L(-16, -70), L(-8, -86), L(6, -88), L(14, -78), L(18, -45), L(19, hf), L(2, hf + 3)], { fill: o.c, id: id + 9, w: 2.2 });
+  drawHead(o, r, id + 20);
+  if (!o.noArmF) drawArmF(o, r);
+}
+// A coat folded over a forearm.
+function drape(el, hd, col, id) {
+  const x0 = Math.min(el[0], hd[0]) - 6, x1 = Math.max(el[0], hd[0]) + 10, y = (el[1] + hd[1]) / 2;
+  ink([[x0, y - 6], [x1, y - 8], [x1 + 4, y + 70], [x1 - 6, y + 112], [x0 + 6, y + 116], [x0 - 4, y + 64]], { fill: col, sharp: true, id, w: 2.2 });
+  ink([[x0 + 2, y + 2], [x1 - 2, y], [x1, y + 22], [x0, y + 24]], { fill: shade(col, .12), sharp: true, id: id + 1, w: 1.6 });
+  ink([[x0 + 4, y + 30], [x0 - 10, y + 96], [x0 - 2, y + 140], [x0 + 16, y + 138], [x0 + 20, y + 90]], { fill: shade(col, -.15), sharp: true, id: id + 2, w: 2 });
+  ink([[x0 - 4, y + 132], [x0 + 18, y + 130]], { w: 2, stroke: 'rgba(200,205,220,.6)', id: id + 3 });
+  ink([[(x0 + x1) / 2 + 4, y + 30], [(x0 + x1) / 2 + 2, y + 108]], { w: 1.4, stroke: 'rgba(20,20,30,.6)', id: id + 4 });
+}
+
+// ---------- props ----------
+function chair(hx, hy, d, floor, id) {
+  const c = '#6a4d35', dk = '#4c3624';
+  ink([[hx - d * 24, hy + 8], [hx - d * 30, hy - 48]], { w: 5, stroke: dk, still: true, id: id + 3 });
+  ink([[hx - d * 27, hy - 44], [hx - d * 34, hy - 40], [hx - d * 31, hy - 20], [hx - d * 24, hy - 24]], { fill: c, still: true, id: id + 4, w: 1.6 });
+  ink([[hx - d * 26, hy + 6], [hx + d * 18, hy + 6], [hx + d * 18, hy + 13], [hx - d * 26, hy + 13]], { fill: c, sharp: true, still: true, id, w: 1.8 });
+  ink([[hx - d * 22, hy + 13], [hx - d * 22, floor]], { w: 4, stroke: dk, still: true, id: id + 1 });
+  ink([[hx + d * 14, hy + 13], [hx + d * 14, floor]], { w: 4, stroke: dk, still: true, id: id + 2 });
+}
+function desk(cx, floor, d, id) {
+  const t = floor - 80;
+  ink([[cx + d * 44, t + 30], [cx + d * 42, floor - 4]], { w: 4, stroke: '#4c3624', still: true, id });
+  ink([[cx - d * 52, t + 30], [cx - d * 50, floor]], { w: 5, stroke: '#5a412b', still: true, id: id + 1 });
+  ink([[cx + d * 52, t + 30], [cx + d * 50, floor]], { w: 5, stroke: '#5a412b', still: true, id: id + 2 });
+  ink([[cx - 56, t + 8], [cx + 56, t + 8], [cx + 54, t + 32], [cx - 54, t + 32]], { fill: '#6e5238', sharp: true, still: true, id: id + 3, w: 2 });
+  ink([[cx - d * 60, t + 6], [cx + d * 60, t - 4], [cx + d * 60, t + 4], [cx - d * 60, t + 12]], { fill: '#8c6a48', sharp: true, still: true, id: id + 4, w: 2 });
+  ink(ellPts([cx + d * 40, t - 8], 6, 7, 8), { fill: '#222', still: true, id: id + 5, w: 1.5 });
+  ink([[cx - d * 30, t + 3], [cx + d * 18, t - 2], [cx + d * 20, t + 1], [cx - d * 28, t + 7]], { fill: '#efe4cb', sharp: true, still: true, id: id + 6, w: 1.2 });
+}
+function seatedAtDesk(P, pose, floor, deskCx) {
+  const o = { ...P, ...pose };
+  const r = rig(o);
+  chair(o.x, o.y, o.dir, floor, o.id * 50 + 500);
+  drawPerson({ ...o, noArmF: true }, r);
+  desk(deskCx, floor, o.dir, o.id * 50 + 520);
+  drawArmF(o, r);
+  return r;
+}
+function heldPaper(p, ang, id) {
+  ctx.save(); ctx.translate(p[0], p[1]); ctx.rotate(ang);
+  ink([[-15, -26], [15, -24], [16, 18], [-14, 20]], { fill: '#efe5cd', sharp: true, id, w: 1.5 });
+  ctx.restore();
+}
+function ash(u, n, seed, col) {
+  const q = twos(u); ctx.fillStyle = col;
+  for (let i = 0; i < n; i++) {
+    const r = R(seed + i), sp = 8 + r() * 18;
+    const x = r() * W + Math.sin(q * 1.4 + i) * 16;
+    const y = ((r() * (H + 80)) + q * sp) % (H + 80) - 40;
+    const s = 1.5 + r() * 3;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(q * (r() - .5) * 3);
+    ctx.beginPath(); ctx.ellipse(0, 0, s * 1.6, s * .8, 0, 0, 7); ctx.fill(); ctx.restore();
+  }
+}
+function deskTop(dark) {
+  ink([[-300, -300], [W + 300, -300], [W + 300, H + 300], [-300, H + 300]], { fill: dark ? '#3a2a1e' : '#6b4e36', stroke: false, sharp: true, still: true, id: 701 });
+  const r = R(702);
+  ctx.save(); ctx.strokeStyle = dark ? 'rgba(0,0,0,.25)' : 'rgba(40,25,15,.3)'; ctx.lineWidth = 1.5;
+  for (let i = 0; i < 40; i++) {
+    const y = -100 + i * 24 + r() * 8;
+    ctx.beginPath(); ctx.moveTo(-200, y);
+    for (let x = -200; x <= W + 200; x += 60) ctx.lineTo(x, y + Math.sin(x * .004 + i) * 6);
+    ctx.stroke();
+  }
+  ctx.restore();
+  dabs(-200, -200, W + 400, H + 400, dark ? '#4a3626' : '#7a5a3e', 60, 703, 20, 80, .25);
+}
+function writingHand(nib, coat, id, lift = 0, noPen = false) {
+  const n = [nib[0], nib[1] - lift], X = (a, b) => [n[0] + a, n[1] + b];
+  limb([X(80, 66), X(160, 180), X(220, 350)], 54, coat, id);
+  ink([X(48, 44), X(92, 30), X(104, 62), X(60, 80)], { fill: '#efe9dc', id: id + 4, w: 1.8 });
+  if (!noPen && lift > 2) { ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.beginPath(); ctx.ellipse(nib[0] + 4, nib[1] + 2, 4, 2, 0, 0, 7); ctx.fill(); }
+  ink([X(8, 6), X(22, -8), X(48, -6), X(70, 12), X(78, 42), X(58, 62), X(26, 54), X(10, 32)], { fill: SKIN, id: id + 1, w: 2 });
+  ink([X(34, 18), X(50, 34)], { w: 1.4, stroke: 'rgba(90,60,40,.6)', id: id + 5 });
+  if (!noPen) ink([n, X(42, -74)], { w: 4.5, stroke: '#1f1a17', id: id + 3 });
+  ink([X(6, 4), X(18, -6), X(34, -6)], { w: 2.2, id: id + 2 });
+}
+
+function polyPart(pts, f) {
+  let total = 0; for (let i = 1; i < pts.length; i++) total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+  let left = total * f; const out = [pts[0]];
+  for (let i = 1; i < pts.length && left > 0; i++) {
+    const L = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+    if (left >= L) { out.push(pts[i]); left -= L; } else { const t = left / L; out.push([lerp(pts[i - 1][0], pts[i][0], t), lerp(pts[i - 1][1], pts[i][1], t)]); left = 0; }
+  }
+  return out;
+}
+function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+// ---------- this story's cast and world ----------
+const UI = '"Helvetica Neue",Helvetica,Arial,sans-serif';
+const BLUEINK = '#2a4c9c';
+const HELEN = { id: 8, c: '#6f7d62', legC: '#3b3a3a', hair: 'bun', hairC: '#bdb7ae', glasses: true, skin: '#e8c6a8', hem: 46 };
+const HELEN_YOUNG = { ...HELEN, hairC: '#6a4a32', c: '#7a6a8a' };
+const MARTIN = { id: 9, c: '#8a4b32', legC: '#4a4238', hair: 'short', hairC: '#7a6a5a', hat: 'cap', hatC: '#5a4a3a', hem: 26 };
+const GHOST = { ...MARTIN, id: 10, c: '#b8c6d6', legC: '#b8c6d6', skin: '#dfe6ee', hairC: '#b8c6d6', hatC: '#b8c6d6' };
+
+function rucksack(r, col = '#3f6b6b') {
+  const L = r.L;
+  ink([L(-12, -80), L(-34, -74), L(-38, -30), L(-14, -24)], { fill: col, id: r.s * 1000 + 31, w: 2 });
+  ink([L(-6, -84), L(-2, -40)], { w: 2.5 * r.s, stroke: shade(col, -.3), id: r.s * 1000 + 32 });
+}
+function topHand(x, y, ang, id, sleeve, skin = '#e8c6a8', flat = 0) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+  limb([[0, 90], [0, 420]], 92, sleeve, id);
+  for (let k = 0; k < 4; k++) { const fx = -27 + k * 18; limb([[fx * .8, 20], [fx, -40 + Math.abs(k - 1.5) * 8 - flat * 10]], 15, skin, id + 2 + k); }
+  limb([[-34, 50], [-62, 8]], 17, skin, id + 7);
+  ink(ellPts([0, 46], 40, 46, 12), { fill: skin, id: id + 1, w: 2 });
+  ctx.restore();
+}
+function stoneWall(pts, id) { ink(pts, { fill: '#b9b2a3', sharp: true, still: true, id, w: 2 }); }
+
+// The map Martin marked: 900 x 560 map units.
+const ROUTE = [[660, 175], [600, 232], [520, 262], [420, 298], [320, 336], [214, 374]];
+function coastMap(routeP = 1, noteP = 1) {
+  ctx.fillStyle = '#efe6cf'; ctx.fillRect(0, 0, 900, 560);
+  ctx.fillStyle = '#c3d6d8';
+  ctx.beginPath(); ctx.moveTo(0, 0); for (const p of [[430, 0], [390, 80], [410, 150], [340, 220], [300, 300], [200, 330], [150, 378], [232, 420], [320, 444], [300, 520], [340, 560]]) ctx.lineTo(...p); ctx.lineTo(0, 560); ctx.closePath(); ctx.fill();
+  ctx.save(); ctx.strokeStyle = 'rgba(80,110,120,.35)'; ctx.lineWidth = 1; for (let k = 1; k < 4; k++) { ctx.beginPath(); ctx.moveTo(400 - k * 22, 0); ctx.bezierCurveTo(320 - k * 20, 200, 120 - k * 20, 330, 320 - k * 20, 560); ctx.stroke(); } ctx.restore();
+  ctx.save(); ctx.strokeStyle = 'rgba(140,110,70,.35)'; ctx.setLineDash([6, 5]); for (let k = 0; k < 4; k++) { ctx.beginPath(); ctx.ellipse(700, 380, 110 + k * 50, 70 + k * 30, -.3, 0, 7); ctx.stroke(); } ctx.restore();
+  ctx.fillStyle = '#9a8a72'; const r = R(5); for (let k = 0; k < 14; k++) ctx.fillRect(600 + r() * 90, 180 + r() * 70, 9, 7);
+  ctx.strokeStyle = '#5a4a3a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(590, 222); ctx.lineTo(590, 240); ctx.moveTo(583, 228); ctx.lineTo(597, 228); ctx.stroke();
+  ctx.fillStyle = '#c0392b'; ctx.beginPath(); ctx.arc(660, 175, 8, 0, 7); ctx.fill(); ctx.fillStyle = '#fff'; ctx.font = '700 10px ' + UI; ctx.fillText('B', 656, 179);
+  ctx.save(); ctx.setLineDash([2, 6]); ctx.strokeStyle = '#8a5a2a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(590, 240); for (const p of ROUTE.slice(2)) ctx.lineTo(...p); ctx.stroke(); ctx.restore();
+  ctx.strokeStyle = '#5a5050'; ctx.lineWidth = 2; ctx.strokeRect(204, 366, 16, 12); ctx.beginPath(); ctx.moveTo(204, 366); ctx.lineTo(212, 358); ctx.lineTo(220, 366); ctx.stroke();
+  ctx.fillStyle = '#4a4038'; ctx.font = '600 13px ' + UI; ctx.fillText('BELLWICK', 610, 285); ctx.font = 'italic 12px ' + UI; ctx.fillText('Chapel (ruin)', 160, 400);
+  ctx.fillStyle = '#5a7078'; ctx.font = 'italic 14px ' + UI; ctx.fillText('Bellwick Sands', 120, 470);
+  if (routeP > 0) { const p = polyPart(ROUTE, routeP); ink(p, { w: 3.2, stroke: BLUEINK, still: true, id: 8001, j: 1.2 }); }
+  if (noteP > 0) {
+    ctx.save(); ctx.font = '28px ' + HAND; ctx.fillStyle = BLUEINK;
+    writeOn('8.10 out. 6.40 back.', 560, 100, seg(noteP, 0, .5));
+    writeOn('Café does a decent lunch.', 560, 136, seg(noteP, .5, 1));
+    ctx.restore();
+  }
+  ctx.save(); ctx.strokeStyle = 'rgba(120,100,70,.35)'; ctx.lineWidth = 2;
+  for (const x of [300, 600]) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 560); ctx.stroke(); }
+  ctx.beginPath(); ctx.moveTo(0, 280); ctx.lineTo(900, 280); ctx.stroke();
+  ctx.fillStyle = 'rgba(0,0,0,.04)'; ctx.fillRect(300, 0, 300, 280); ctx.fillRect(0, 280, 300, 280); ctx.fillRect(600, 280, 300, 280);
+  ctx.restore();
+}
+function paperBG(seed, col = '#ede3cc') { ctx.fillStyle = col; ctx.fillRect(-400, -400, W + 800, H + 800); dabs(-300, -300, W + 600, H + 600, '#f6eedb', 40, seed, 40, 140, .4); }
+
+// ---------- shots ----------
+function shotTitle(u) {
+  CAM = { x: 640, y: 360, z: 1 + u * .01 };
+  layer(0, () => paperBG(11));
+  layer(1, () => {
+    ctx.save(); ctx.strokeStyle = 'rgba(120,100,70,.3)'; ctx.lineWidth = 2;
+    for (const x of [427, 853]) { ctx.beginPath(); ctx.moveTo(x, -50); ctx.lineTo(x, H + 50); ctx.stroke(); }
+    ctx.beginPath(); ctx.moveTo(-50, 360); ctx.lineTo(W + 50, 360); ctx.stroke(); ctx.restore();
+    ctx.font = '72px ' + HAND; ctx.fillStyle = BLUEINK;
+    const txt = 'The Sunday Bus', w = ctx.measureText(txt).width;
+    writeOn(txt, 640 - w / 2, 330, ease(seg(u, .6, 3.4)));
+    const p = polyPart([[420, 380], [520, 396], [640, 388], [760, 400], [860, 392]], ease(seg(u, 2.6, 4.2)));
+    ctx.save(); ctx.setLineDash([2, 8]); ink(p, { w: 3, stroke: BLUEINK, id: 8002, j: .8 }); ctx.restore();
+  });
+}
+
+function photoCard(x, y, ang, k, id) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+  ink([[-92, -66], [92, -66], [92, 66], [-92, 66]], { fill: '#f7f4ec', sharp: true, still: true, id, w: 1.5 });
+  ctx.fillStyle = ['#d8cdb8', '#cfd6dc', '#e0d2c2'][k]; ctx.fillRect(-82, -56, 164, 100);
+  const th = [70, 56, 84][k];
+  ctx.fillStyle = '#3f6a42'; ctx.beginPath(); ctx.moveTo(52, 40 - th); ctx.lineTo(80, 40); ctx.lineTo(24, 40); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#c0392b'; for (let i = 0; i < 4; i++) { ctx.beginPath(); ctx.arc(40 + i * 7, 30 - i * 12, 2.4, 0, 7); ctx.fill(); }
+  for (let i = 0; i < 4 + k; i++) { const px = -68 + i * 20; ctx.fillStyle = ['#5a4a6a', '#7a5a3a', '#3a5a6a', '#8a3a3a'][(i + k) % 4]; ctx.fillRect(px - 6, 6, 12, 32); ctx.fillStyle = '#e2c2a2'; ctx.beginPath(); ctx.arc(px, 0, 6, 0, 7); ctx.fill(); }
+  ctx.restore();
+}
+function shotDrawer(u) {
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 640], [10.6, 640], [13.6, 620]]), y: K(u, [[0, 360], [10.6, 360], [13.6, 420]]), z: K(u, [[0, 1.02], [10.6, 1.06], [13.6, 1.6]]) };
+  layer(.9, () => {
+    ctx.fillStyle = '#7a5e44'; ctx.fillRect(-300, -300, W + 600, H + 600);
+    ink([[230, 80], [1050, 80], [1050, 610], [230, 610]], { fill: '#5a4330', sharp: true, still: true, id: 8100, w: 3 });
+    ink([[250, 100], [1030, 100], [1030, 600], [250, 600]], { fill: '#6e5440', sharp: true, still: true, id: 8101, w: 1.5 });
+    dabs(250, 100, 780, 500, '#7a604a', 40, 8102, 20, 60, .3);
+  });
+  layer(1, () => {
+    // the folded map at the bottom
+    ctx.save(); ctx.translate(620, 450); ctx.rotate(.04);
+    ink([[-130, -86], [130, -86], [130, 86], [-130, 86]], { fill: '#efe6cf', sharp: true, still: true, id: 8110, w: 1.6 });
+    ctx.fillStyle = '#c3d6d8'; ctx.fillRect(-120, -76, 90, 152);
+    ctx.fillStyle = '#4a4038'; ctx.font = '600 20px ' + UI; ctx.fillText('COAST PATH', -20, -30); ctx.font = '13px ' + UI; ctx.fillText('Sheet 7', -20, -8);
+    ink([[-30, 20], [10, 40], [60, 30], [110, 50]], { w: 3, stroke: BLUEINK, still: true, id: 8111 });
+    ctx.restore();
+    // three photographs, fanned and then slid aside
+    const fan = ease(seg(q, 7.6, 9.2)), aside = ease(seg(q, 10, 11));
+    for (let k = 0; k < 3; k++) photoCard(lerp(620, 440 - k * 70, aside) + fan * (k - 1) * 120, lerp(440, 300, aside) + fan * Math.abs(k - 1) * 14, (k - 1) * .2 * fan + .05 * k, k, 8120 + k);
+    // the spectacle case, opened and empty
+    const open = ease(seg(q, 5, 5.6));
+    ctx.save(); ctx.translate(820, 230);
+    ink([[-80, 0], [-72, 22], [0, 30], [72, 22], [80, 0]], { fill: '#7a2e2e', id: 8130, w: 2, still: true });
+    if (open > 0) ink([[-70, 0], [-60, 16], [0, 22], [60, 16], [70, 0]], { fill: '#c9b48a', id: 8131, w: 1, still: true });
+    ink([[-80, 0], [-72, -22 - open * 30], [0, -30 - open * 44], [72, -22 - open * 30], [80, 0]], { fill: '#8a3434', id: 8132, w: 2 });
+    ctx.restore();
+    // rubber bands; one is stretched until it snaps
+    for (let k = 0; k < 5; k++) ink(ellPts([340 + k * 26, 210 + (k % 2) * 30], 16, 12, 10), { stroke: '#b3703a', close: true, w: 3, still: true, id: 8140 + k });
+    const pull = ease(seg(q, 1.4, 3.1)), snapped = q > 3.15;
+    const lh = [lerp(470, 420, pull) - (snapped ? 30 : 0), 300], rh = [lerp(500, 600, pull) + (snapped ? 40 : 0), 300];
+    if (q > 1 && q < 4.4) {
+      if (!snapped) ink(ellPts([(lh[0] + rh[0]) / 2, 300], (rh[0] - lh[0]) / 2, lerp(12, 4, pull), 14), { stroke: '#b3703a', close: true, w: 3, id: 8150 });
+      else { ink([[lh[0], 300], [lh[0] + 30, 310], [lh[0] + 46, 326]], { w: 3, stroke: '#b3703a', id: 8151 }); ink([[rh[0], 300], [rh[0] - 30, 290], [rh[0] - 40, 270]], { w: 3, stroke: '#b3703a', id: 8152 }); }
+      const enter = 1 - ease(seg(q, 1, 1.4)) + ease(seg(q, 3.8, 4.4));
+      topHand(lh[0] - 10, lh[1] + 30 + enter * 400, .4, 8160, HELEN.c);
+      topHand(rh[0] + 10, rh[1] + 30 + enter * 400, -.4, 8170, HELEN.c);
+    }
+    if (q > 4.6 && q < 6.4) { const e = 1 - ease(seg(q, 4.6, 5)) + ease(seg(q, 6, 6.4)); topHand(840, 160 + e * 500, -.1, 8180, HELEN.c); }
+    if (q > 7.2 && q < 11.6) { const e = 1 - ease(seg(q, 7.2, 7.6)) + ease(seg(q, 11.2, 11.6)); topHand(lerp(640, 470, aside), lerp(520, 400, aside) + e * 500, -.15, 8190, HELEN.c); }
+  });
+}
+
+function calendar(n, flip) {
+  ink([[900, 140], [1010, 140], [1010, 280], [900, 280]], { fill: '#f6f2ea', sharp: true, still: true, id: 8200, w: 1.5 });
+  ctx.fillStyle = '#b03a2e'; ctx.fillRect(900, 140, 110, 30);
+  ctx.fillStyle = '#fff'; ctx.font = '700 15px ' + UI; ctx.textAlign = 'center'; ctx.fillText('MONDAY', 955, 161);
+  ctx.fillStyle = '#2a2420'; ctx.font = '700 64px ' + UI; ctx.fillText(String(n), 955, 252); ctx.textAlign = 'left';
+  if (flip > 0 && flip < 1) { ctx.fillStyle = '#efe9de'; ctx.fillRect(900, 170, 110, 110 * (1 - flip)); ctx.strokeStyle = 'rgba(0,0,0,.3)'; ctx.strokeRect(900, 170, 110, 110 * (1 - flip)); }
+}
+function libraryRoom() {
+  layer(.6, () => {
+    ctx.fillStyle = '#ddd0b6'; ctx.fillRect(-400, -400, W + 800, H + 800);
+    const r = R(820);
+    for (let s = 0; s < 4; s++) {
+      const x0 = -260 + s * 280;
+      ink([[x0, 120], [x0 + 250, 120], [x0 + 250, 620], [x0, 620]], { fill: '#6e5236', sharp: true, still: true, id: 8210 + s, w: 2 });
+      for (let row = 0; row < 4; row++) {
+        let x = x0 + 12; const y = 240 + row * 110;
+        while (x < x0 + 236) { const w = 10 + r() * 14, h = 70 + r() * 26; ctx.fillStyle = ['#8a4b3a', '#4a6a6a', '#b59a5a', '#5a4a6a', '#7a8a5a', '#a87050'][Math.floor(r() * 6)]; ctx.fillRect(x, y - h, w, h); x += w + 2; }
+        ctx.fillStyle = '#5a412b'; ctx.fillRect(x0, y, 250, 8);
+      }
+    }
+  });
+  layer(.95, () => { ctx.fillStyle = '#9a8264'; ctx.fillRect(-400, 640, W + 800, 400); dabs(-300, 640, W + 600, 300, '#a88f70', 30, 8220, 20, 60, .3); });
+}
+function shotMemory(u) {
+  const q = twos(u);
+  CAM = { x: 680, y: 500, z: K(u, [[0, 1.45], [21, 1.55]]) };
+  libraryRoom();
+  // Mondays go by: the calendar flips faster and faster
+  const flips = [9.4, 11, 12.4, 13.6, 14.8, 17, 18.8, 20.4], days = [3, 10, 17, 24, 1, 8, 15, 22, 29];
+  let n = 0; for (const f of flips) if (q >= f) n++;
+  const fl = flips.find(f => q >= f && q < f + .3);
+  layer(.6, () => calendar(days[Math.min(n, days.length - 1)], fl ? (q - fl) / .3 : 0));
+  layer(1, () => {
+    const wx = K(q, [[0, -120], [2.4, 470]], t => t), walking = q < 2.4;
+    const invite = K(q, [[0, 0], [5, 0], [5.4, 1], [6.6, 1], [7, 0], [7.4, 0], [7.8, 1], [8.8, 1], [9.2, 0], [9.8, 0], [10.2, 1], [11, 1], [11.4, 0], [11.6, 0], [12, 1], [12.8, 1], [13.2, 0]]);
+    const describe = K(q, [[0, 0], [2.6, 0], [3, 1], [4.6, 1], [4.9, 0], [16, 0], [16.4, 1], [21, 1]]);
+    const sweep = Math.sin(q * 2.4);
+    const handF = invite > 0.01 ? mix([wx + 30, 560], [wx + 90, 520], invite) : [wx + 30 + describe * 50 + describe * sweep * 18, 560 - describe * 90 + describe * Math.cos(q * 2.4) * 12];
+    const om = { ...MARTIN, x: wx, y: 594, s: 1.05, dir: 1, stride: walking ? 1 : 0, walk: wx / 16, lean: invite * .08, head: K(q, [[0, 0], [2.6, -.05]]), handF };
+    const rm = rig(om); drawPerson(om, rm);
+    for (const k of [0, 1]) { const f = rm.legs[k][2]; ink(ellPts([f[0] + 4, f[1] - 2], 10, 4, 8), { fill: '#6a4a2a', id: 8230 + k, w: 1 }); }
+    for (let i = 0; i < 6; i++) { const x = -60 + i * 90; if (x < wx - 20) ink(ellPts([x, 702 + (i % 2) * 6], 6, 3, 6), { fill: '#7a5a3a', stroke: false, still: true, id: 8240 + i }); }
+    ink([[600, 572], [760, 572], [760, 700], [600, 700]], { fill: '#7a5a3e', sharp: true, still: true, id: 8250, w: 2.5 });
+    ink([[590, 560], [770, 560], [770, 574], [590, 574]], { fill: '#8e6c4c', sharp: true, still: true, id: 8251, w: 2 });
+    for (let k = 0; k < 3; k++) ink([[640 + k * 34, 558], [668 + k * 34, 558], [668 + k * 34, 538 + k * 4], [640 + k * 34, 538 + k * 4]], { fill: ['#4a6a6a', '#8a4b3a', '#b59a5a'][k], sharp: true, still: true, id: 8252 + k, w: 1.5 });
+    const decline = [6.8, 9, 11.2, 13, 14.2].reduce((a, t) => a + Math.max(0, 1 - Math.abs(q - t) / .3), 0);
+    const oh = { ...HELEN_YOUNG, x: 850, y: 596, s: 1, dir: -1, lean: .02 - decline * .05, head: K(q, [[0, 0], [16, 0], [16.4, .05]]) - decline * .1 + decline * Math.sin(q * 20) * .08,
+      handF: decline > .2 ? [790, 512] : [772, 556], handB: [790, 558] };
+    drawPerson(oh, rig(oh));
+  });
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalCompositeOperation = 'color'; ctx.fillStyle = 'rgba(160,130,90,.6)'; ctx.fillRect(0, 0, cvs.width, cvs.height); ctx.restore();
+}
+
+function shotMap(u) {
+  CAM = { x: K(u, [[0, 640], [8, 640], [11, 790]]), y: K(u, [[0, 360], [8, 360], [11, 200]]), z: K(u, [[0, 1.02], [8, 1.1], [11, 1.5]]) };
+  layer(.9, () => { ctx.fillStyle = '#6e5440'; ctx.fillRect(-300, -300, W + 600, H + 600); dabs(-200, -200, W + 400, H + 400, '#7a604a', 40, 8300, 30, 100, .3); });
+  layer(1, () => {
+    const sx = ease(seg(u, .2, 1)), sy = ease(seg(u, 1, 1.8));
+    ctx.save(); ctx.translate(640, 360); ctx.scale(lerp(.34, 1, sx), lerp(.5, 1, sy)); ctx.translate(-450, -280);
+    ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.fillRect(10, 12, 900, 560);
+    coastMap(ease(seg(u, 2.4, 6)), seg(u, 7.6, 10.6));
+    ctx.restore();
+  });
+}
+
+function cardFace(x, y, k, id) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate([-.04, .03, -.02, .05, -.03, .02, -.05, .03][k % 8]);
+  ink([[-38, -120], [38, -120], [38, 0], [-38, 0]], { fill: ['#f4efe4', '#e8eef2', '#f2e6e6', '#eef0e2'][k % 4], sharp: true, still: true, id, w: 1.5 });
+  const m = k % 4;
+  if (m === 0) { ctx.fillStyle = '#3f6a42'; ctx.beginPath(); ctx.moveTo(0, -96); ctx.lineTo(20, -30); ctx.lineTo(-20, -30); ctx.closePath(); ctx.fill(); }
+  if (m === 1) { ctx.fillStyle = '#c9a23a'; ctx.beginPath(); for (let i = 0; i < 10; i++) { const a = i * Math.PI / 5, r = i % 2 ? 8 : 20; ctx.lineTo(Math.cos(a) * r, -64 + Math.sin(a) * r); } ctx.fill(); }
+  if (m === 2) { ctx.fillStyle = '#8a5a3a'; ctx.beginPath(); ctx.ellipse(0, -60, 16, 13, 0, 0, 7); ctx.fill(); ctx.fillStyle = '#c0392b'; ctx.beginPath(); ctx.arc(-6, -56, 7, 0, 7); ctx.fill(); }
+  if (m === 3) { ctx.strokeStyle = '#8aa0b8'; ctx.lineWidth = 2; for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.moveTo(-14, -60 + i * 8); ctx.lineTo(14, -60 - i * 8 + 16); ctx.stroke(); } }
+  ctx.restore();
+}
+function shotCards(u) {
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 600], [8, 700], [11.4, 900]]), y: 360, z: K(u, [[0, 1.05], [11.4, 1.3]]) };
+  layer(.7, () => { ctx.fillStyle = '#e3d6c0'; ctx.fillRect(-400, -400, W + 800, H + 800); dabs(-300, -300, W + 600, H + 600, '#eadfcb', 30, 8400, 40, 140, .4); });
+  layer(1, () => {
+    ink([[-200, 470], [W + 300, 470], [W + 300, 500], [-200, 500]], { fill: '#8a6a4a', sharp: true, still: true, id: 8401, w: 2 });
+    for (let i = 0; i < 8; i++) {
+      const t0 = .4 + i * .32; if (q < t0) continue;
+      const pop = K(q - t0, [[0, 0], [.12, 1.12], [.24, .96], [.32, 1]], t => t);
+      ctx.save(); ctx.translate(120 + i * 92, 470); ctx.scale(1, pop); cardFace(0, 0, i, 8410 + i); ctx.restore();
+    }
+    // the February card: plain, its handwriting unsteady
+    if (q > 4.3) {
+      const pop = K(q - 4.3, [[0, 0], [.14, 1.1], [.3, 1]], t => t);
+      ctx.save(); ctx.translate(120 + 8 * 92 + 10, 470); ctx.scale(1, pop); ctx.rotate(.03);
+      ink([[-40, -124], [40, -124], [40, 0], [-40, 0]], { fill: '#f6f3ec', sharp: true, still: true, id: 8430, w: 1.5 });
+      ctx.strokeStyle = '#3a3a5a'; ctx.lineWidth = 2;
+      for (let l = 0; l < 4; l++) { ctx.beginPath(); for (let x = -30; x <= 28; x += 4) { const y = -96 + l * 22 + Math.sin(x * .7 + l * 3) * 3 + Math.sin(x * 2.3) * 1.6; x === -30 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); } ctx.stroke(); }
+      ctx.fillStyle = '#6a6a7a'; ctx.font = 'italic 11px ' + UI; ctx.fillText('February', -26, -6);
+      ctx.restore();
+    }
+    // the place where next year's card would have stood
+    if (q > 11.4) {
+      ctx.save(); ctx.globalAlpha = ease(seg(q, 11.4, 12.2)); ctx.setLineDash([6, 6]); ctx.strokeStyle = 'rgba(90,70,50,.6)'; ctx.lineWidth = 2;
+      ctx.strokeRect(120 + 9 * 92 + 22 - 38, 470 - 120, 76, 120); ctx.restore();
+    }
+  });
+  // her reply, in larger letters
+  if (q > 8.4 && q < 11.6) layer(1.3, () => {
+    const e = ease(seg(q, 8.4, 9)) - ease(seg(q, 11, 11.6));
+    ctx.save(); ctx.translate(640 + 60, lerp(900, 380, e)); ctx.rotate(-.05);
+    ink([[-230, -150], [230, -150], [230, 150], [-230, 150]], { fill: '#fbf8f0', sharp: true, id: 8440, w: 2 });
+    ctx.font = '64px ' + HAND; ctx.fillStyle = '#2a2420'; ctx.fillText('Dear Martin,', -200, -60);
+    ctx.font = '52px ' + HAND; ctx.fillText('Happy Christmas.', -200, 20); ctx.fillText('With love, Helen', -160, 100);
+    ctx.restore();
+  });
+}
+function shotHandbag(u) {
+  CAM = { x: 640, y: 360, z: lerp(1.05, 1.12, ease(u / 6)) };
+  layer(.9, () => { ctx.fillStyle = '#c9bca4'; ctx.fillRect(-300, -300, W + 600, H + 600); dabs(-200, -200, W + 400, H + 400, '#d4c8b2', 30, 8500, 40, 120, .4); });
+  layer(1, () => {
+    ink([[380, 220], [900, 220], [940, 600], [340, 600]], { fill: '#4a2e24', id: 8501, w: 2.5, still: true });
+    ink([[400, 240], [880, 240], [870, 300], [410, 300]], { fill: '#2a1a14', sharp: true, id: 8502, w: 1.5, still: true });
+    const s = ease(seg(u, .8, 2.6));
+    ctx.save(); ctx.beginPath(); ctx.rect(0, -400, W, 670); ctx.clip();
+    ctx.translate(640, lerp(-60, 300, s)); ctx.rotate(.04);
+    ink([[-130, -86], [130, -86], [130, 86], [-130, 86]], { fill: '#efe6cf', sharp: true, id: 8503, w: 1.6, still: true });
+    ctx.fillStyle = '#c3d6d8'; ctx.fillRect(-120, -76, 90, 152); ctx.fillStyle = '#4a4038'; ctx.font = '600 20px ' + UI; ctx.fillText('COAST PATH', -20, -30);
+    ctx.restore();
+    ink([[380, 268], [900, 268], [910, 330], [370, 330]], { fill: '#4a2e24', sharp: true, id: 8504, w: 2, still: true });
+    const shut = ease(seg(u, 3.2, 3.8));
+    ink([[620, 250 - shut * 4], [660, 250 - shut * 4], [660, 268], [620, 268]], { fill: '#c9a23a', sharp: true, id: 8505, w: 1.5 });
+    if (u > .6 && u < 3.4) topHand(lerp(700, 690, s), lerp(200, 380, s) + (1 - ease(seg(u, .6, 1))) * 300 + ease(seg(u, 3, 3.4)) * 500, .1, 8510, HELEN.c);
+  });
+}
+function shotClock(u) {
+  const q = twos(u);
+  CAM = { x: 640, y: 380, z: lerp(1.2, 1.3, ease(u / 7)) };
+  const dawn = ease(seg(u, 0, 6));
+  layer(.5, () => {
+    ctx.fillStyle = '#3a3a4a'; ctx.fillRect(-400, -400, W + 800, H + 800);
+    const g = ctx.createLinearGradient(0, 80, 0, 400); g.addColorStop(0, `rgb(${lerp(90, 240, dawn)},${lerp(100, 200, dawn)},${lerp(140, 160, dawn)})`); g.addColorStop(1, `rgb(${lerp(120, 250, dawn)},${lerp(110, 220, dawn)},${lerp(130, 170, dawn)})`);
+    ctx.fillStyle = g; ctx.fillRect(820, 90, 300, 300);
+    ink([[820, 90], [1120, 90], [1120, 390], [820, 390]], { stroke: '#2a2a32', w: 10, close: true, sharp: true, still: true, id: 8600 });
+    ink([[970, 90], [970, 390]], { stroke: '#2a2a32', w: 6, still: true, id: 8601 });
+  });
+  layer(1, () => {
+    ink([[200, 520], [1000, 520], [1000, 740], [200, 740]], { fill: '#5a4636', sharp: true, still: true, id: 8602, w: 2 });
+    ctx.save(); ctx.translate(560, 420);
+    ink([[-60, 90], [-80, 110]], { w: 6, stroke: '#333', id: 8603 }); ink([[60, 90], [80, 110]], { w: 6, stroke: '#333', id: 8604 });
+    ink(ellPts([0, 0], 110, 110, 20), { fill: '#b8b0a0', id: 8605, w: 3 });
+    ink(ellPts([0, 0], 94, 94, 20), { fill: '#f6f2e6', id: 8606, w: 2 });
+    for (let i = 0; i < 12; i++) { const a = i / 12 * Math.PI * 2; ctx.fillStyle = '#2a2420'; ctx.fillRect(Math.cos(a) * 80 - 2, Math.sin(a) * 80 - 2, 4, 4); }
+    const press = K(q, [[0, 0], [3, 0], [3.15, 1], [3.5, 1], [3.7, 0]]);
+    for (const s of [-1, 1]) ink(ellPts([s * 62, -106], 28, 18, 12), { fill: '#b8b0a0', id: 8607 + s, w: 2 });
+    ink([[-10, -112 + press * 6], [10, -112 + press * 6], [10, -126 + press * 6], [-10, -126 + press * 6]], { fill: '#555', sharp: true, id: 8609, w: 1.5 });
+    const min = 58 + seg(q, 1, 1.2) * 1, ha = ((6 + min / 60) / 12) * Math.PI * 2 - Math.PI / 2, ma = (min / 60) * Math.PI * 2 - Math.PI / 2;
+    ink([[0, 0], [Math.cos(ha) * 46, Math.sin(ha) * 46]], { w: 6, stroke: '#2a2420', id: 8610 });
+    ink([[0, 0], [Math.cos(ma) * 74, Math.sin(ma) * 74]], { w: 4, stroke: '#2a2420', id: 8611 });
+    ctx.restore();
+    if (q > 2 && q < 5.4) { const e = 1 - ease(seg(q, 2, 2.9)) + ease(seg(q, 4.4, 5.4)); topHand(560 + e * 300, -110 + 420 - press * 8 + 40 - e * 200, Math.PI, 8620, '#d8c8d8', HELEN.skin, press); }
+  });
+}
+function shotPack(u) {
+  const q = twos(u);
+  CAM = { x: 640, y: 380, z: lerp(1.04, 1.12, ease(u / 13)) };
+  layer(.9, () => { ctx.fillStyle = '#c9d0d8'; ctx.fillRect(-300, -300, W + 600, H + 600); for (let x = -300; x < W + 300; x += 60) { ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(x, -300, 24, H + 600); } });
+  layer(1, () => {
+    const inn = easeOut(seg(q, .3, 1.6));
+    ctx.save(); ctx.translate(lerp(-300, 640, inn), 400);
+    if (q < 2.4) { const d = seg(q, 1.4, 2.4); ctx.fillStyle = `rgba(200,190,170,${.5 * (1 - d)})`; for (let i = 0; i < 6; i++) { ctx.beginPath(); ctx.arc(-160 + i * 50, 130 + Math.sin(i) * 20 - d * 30, 14 + d * 20, 0, 7); ctx.fill(); } }
+    ink([[-220, -150], [220, -150], [240, 160], [-240, 160]], { fill: '#3f6b6b', id: 8700, w: 2.5, still: true });
+    ink([[-170, -110], [170, -110], [180, 120], [-180, 120]], { fill: '#24403f', sharp: true, id: 8701, w: 2, still: true });
+    const drops = [[5.2, 'sandwich', [-80, 20]], [6.8, 'apple', [70, -20]], [8.4, 'cardigan', [0, 50]]];
+    for (const [t0, what, [x, y]] of drops) {
+      if (q < t0) continue;
+      const f = seg(q, t0, t0 + .45), land = q - t0 - .45;
+      const k = lerp(1.8, 1, easeOut(f)), sq = land > 0 ? K(land, [[0, 1], [.08, 1.18], [.2, .95], [.3, 1]], t => t) : 1;
+      ctx.save(); ctx.translate(x, lerp(-320, y, easeOut(f))); ctx.scale(k * sq, k / sq);
+      if (what === 'sandwich') { ink([[-60, -36], [60, -36], [-60, 44]], { fill: '#f2e6c4', id: 8710, w: 2 }); ink([[-54, -30], [44, -30], [-54, 30]], { fill: '#e8c060', stroke: false, id: 8711 }); }
+      if (what === 'apple') { ink(ellPts([0, 0], 34, 32, 14), { fill: '#b8332a', id: 8712, w: 2 }); ink([[0, -30], [4, -44]], { w: 3, stroke: '#5a3a22', id: 8713 }); ink([[4, -40], [20, -46], [10, -34]], { fill: '#5a8a3a', id: 8714, w: 1.4 }); }
+      if (what === 'cardigan') { ink([[-120, -60], [120, -60], [124, 60], [-124, 60]], { fill: '#8a7aa0', sharp: true, id: 8715, w: 2 }); for (let i = 0; i < 4; i++) ink(ellPts([-20 + i * 14, -40 + i * 30], 5, 5, 8), { fill: '#e8e0d0', id: 8716 + i, w: 1 }); }
+      ctx.restore();
+    }
+    ink([[200, -150], [260, -60]], { w: 2, stroke: '#888', id: 8720 });
+    ctx.save(); ctx.translate(262, -56); ctx.rotate(.3 + Math.sin(q * 1.3) * .08);
+    ink([[0, 0], [50, 0], [50, 30], [0, 30]], { fill: '#f6efe0', sharp: true, id: 8721, w: 1.5 }); ctx.fillStyle = '#a03a2a'; ctx.font = '700 15px ' + UI; ctx.fillText('£24', 8, 21);
+    ctx.restore();
+    ctx.restore();
+  });
+}
+
+function road(warm) {
+  layer(.12, () => { const g = ctx.createLinearGradient(0, 0, 0, 420); g.addColorStop(0, warm ? '#f2d9a8' : '#dfe6ea'); g.addColorStop(1, warm ? '#f6e6c6' : '#f1ede2'); ctx.fillStyle = g; ctx.fillRect(-500, -500, W + 1000, 1000); });
+}
+function cottages(seed, y0 = 470) {
+  const r = R(seed); let x = -300;
+  while (x < W + 300) {
+    const w = 140 + r() * 90, h = 110 + r() * 50, c = ['#c8bba4', '#b8a88e', '#d4c6ac'][Math.floor(r() * 3)];
+    ink([[x, y0 - h], [x + w, y0 - h], [x + w, y0], [x, y0]], { fill: c, sharp: true, still: true, id: seed + Math.floor(x), w: 1.5 });
+    ink([[x - 8, y0 - h], [x + w / 2, y0 - h - 50], [x + w + 8, y0 - h]], { fill: '#6a5a50', sharp: true, still: true, id: seed + 500 + Math.floor(x), w: 1.5 });
+    ctx.fillStyle = '#6a7a80'; ctx.fillRect(x + 20, y0 - h + 30, 26, 30); ctx.fillRect(x + w - 46, y0 - h + 30, 26, 30); ctx.fillStyle = '#5a4030'; ctx.fillRect(x + w / 2 - 14, y0 - 56, 28, 56);
+    x += w + 10;
+  }
+}
+function bus(x, y, id) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(1.55, 1.55);
+  ink([[0, -200], [640, -200], [650, -30], [-10, -30]], { fill: '#e9dfc4', sharp: true, id, w: 2.5 });
+  ink([[-6, -90], [646, -90], [648, -60], [-8, -60]], { fill: '#3f7a5a', sharp: true, id: id + 1, w: 1.5 });
+  for (let i = 0; i < 6; i++) ink([[90 + i * 90, -180], [160 + i * 90, -180], [160 + i * 90, -116], [90 + i * 90, -116]], { fill: '#a8b8c0', sharp: true, id: id + 2 + i, w: 1.5 });
+  ink([[10, -180], [70, -180], [70, -36], [10, -36]], { fill: '#8a9aa2', sharp: true, id: id + 10, w: 1.5 });
+  for (const wx of [110, 520]) ink(ellPts([wx, -28], 30, 30, 14), { fill: '#222', id: id + 11 + wx % 7, w: 2 });
+  ctx.restore();
+}
+function shotBusStop(u) {
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 905], [3.4, 700]]), y: K(u, [[0, 250], [3.4, 400]]), z: K(u, [[0, 2.4], [3.4, 1.12]]) };
+  road(false);
+  layer(.45, () => cottages(8800, 470));
+  layer(.85, () => { ctx.fillStyle = '#8a8a86'; ctx.fillRect(-400, 470, W + 800, 140); ctx.fillStyle = '#e8e2d2'; for (let x = -400; x < W + 400; x += 90) ctx.fillRect(x, 540, 44, 6); });
+  const bx = K(q, [[0, 1900], [4, 1900], [7.4, 590], [9.6, 590], [12.6, -1400]], t => t < .5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t));
+  const boarded = q > 9.2;
+  layer(1, () => { ctx.fillStyle = '#c9c2b2'; ctx.fillRect(-400, 600, W + 800, 400); ctx.fillStyle = '#b4ad9c'; ctx.fillRect(-400, 600, W + 800, 10); });
+  layer(.97, () => { if (bx < 1800) bus(bx, 600, 8820); });
+  layer(1, () => {
+        ink([[900, 620], [900, 230]], { w: 7, stroke: '#4a4a4a', still: true, id: 8810 });
+    ink(ellPts([900, 220], 34, 34, 14), { fill: '#c0392b', still: true, id: 8811, w: 2 }); ctx.fillStyle = '#fff'; ctx.font = '700 20px ' + UI; ctx.fillText('BUS', 880, 227);
+    ink([[860, 262], [940, 262], [940, 330], [860, 330]], { fill: '#f6f2e6', sharp: true, still: true, id: 8812, w: 1.5 });
+    ctx.fillStyle = '#2a2420'; ctx.font = '600 11px ' + UI; ctx.fillText('SUNDAY', 876, 282); ctx.font = '700 22px ' + UI; ctx.fillText('08:25', 868, 312);
+  });
+  layer(1, () => {
+    if (boarded) return;
+    const walk = seg(q, 8, 9.2);
+    const o = { ...HELEN, x: lerp(760, 610, walk), y: 616 - 104, s: 1, dir: walk > 0 ? -1 : 1, stride: walk > 0 && walk < 1 ? .8 : 0, walk: walk * 8, lean: 0, head: K(q, [[0, -.05], [3.4, -.05], [4, .05]]), handF: walk > 0 ? null : [790, 540] };
+    ctx.save(); ctx.globalAlpha = 1 - seg(q, 8.8, 9.2);
+    const r = rig(o); drawPerson(o, r); rucksack(r);
+    ctx.restore();
+  });
+}
+function shotCafe(u) {
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 640], [8, 780]]), y: K(u, [[0, 380], [8, 420]]), z: K(u, [[0, 1.0], [8, 1.38]]) };
+  road(false);
+  layer(.3, () => { ink([[120, 140], [190, 140], [190, 470], [120, 470]], { fill: '#a89a84', sharp: true, still: true, id: 8900, w: 1.5 }); ink([[110, 140], [155, 80], [200, 140]], { fill: '#6a5a50', sharp: true, still: true, id: 8901, w: 1.5 }); });
+  layer(.5, () => cottages(8910, 480));
+  layer(.85, () => { ctx.fillStyle = '#9a9488'; ctx.fillRect(-400, 480, W + 800, 140); });
+  layer(1, () => {
+    ctx.fillStyle = '#cfc6b4'; ctx.fillRect(-400, 616, W + 800, 300);
+    ink([[600, 180], [1120, 180], [1120, 618], [600, 618]], { fill: '#e2dccd', sharp: true, still: true, id: 8920, w: 2 });
+    ink([[610, 200], [1110, 200], [1110, 262], [610, 262]], { fill: '#4a5a52', sharp: true, still: true, id: 8921, w: 1.5 });
+    ctx.save(); ctx.font = '700 40px ' + UI; ctx.fillStyle = 'rgba(240,235,220,.24)'; ctx.fillText('CAFÉ', 640, 248); ctx.restore();
+    ctx.font = 'italic 30px ' + SERIF; ctx.fillStyle = '#efe8d6'; ctx.fillText('Candles · Soap', 760, 242);
+    // inside the window
+    ctx.save(); ctx.beginPath(); ctx.rect(680, 300, 360, 260); ctx.clip();
+    ctx.fillStyle = '#efe6d2'; ctx.fillRect(680, 300, 360, 260);
+    ctx.fillStyle = '#8a6a4a'; ctx.fillRect(680, 470, 360, 10); ctx.fillRect(680, 390, 360, 8);
+    const moved = ease(seg(q, 6, 7.4)) + ease(seg(q, 10, 11.4));
+    for (let i = 0; i < 7; i++) { const x = 700 + i * 42, last = i === 6; const y = last ? lerp(470, 390, Math.min(1, moved)) : (i % 2 ? 470 : 390); const xx = last ? lerp(910, 960, Math.min(1, moved)) : x;
+      ink([[xx - 8, y], [xx - 8, y - 30], [xx - 4, y - 38], [xx - 4, y - 46], [xx + 4, y - 46], [xx + 4, y - 38], [xx + 8, y - 30], [xx + 8, y]], { fill: '#c4dcc0', sharp: true, id: 8930 + i, w: 1.4 }); }
+    const ow = { id: 11, c: '#c9a2a2', legC: '#4a4040', hair: 'short', hairC: '#3a2a22', x: 900, y: 560, s: .92, dir: 1, lean: .1, head: .12, handF: [lerp(910, 960, Math.min(1, moved)), lerp(440, 360, Math.min(1, moved))], handB: [890, 500] };
+    drawPerson(ow, rig(ow));
+    ctx.fillStyle = 'rgba(220,235,240,.28)'; ctx.fillRect(680, 300, 360, 260);
+    ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 8; for (const x of [720, 760, 930]) { ctx.beginPath(); ctx.moveTo(x, 560); ctx.lineTo(x + 90, 300); ctx.stroke(); }
+    ctx.restore();
+    ink([[680, 300], [1040, 300], [1040, 560], [680, 560]], { stroke: '#4a5a52', w: 10, close: true, sharp: true, still: true, id: 8922 });
+    const o = { ...HELEN, x: 560, y: 616 - 104, s: 1, dir: 1, lean: K(q, [[0, 0], [7.6, 0], [8.4, .08]]), head: K(q, [[0, -.08], [7.6, -.08], [8.4, 0]]), handF: [585, 560] };
+    const r = rig(o); drawPerson(o, r); rucksack(r);
+  });
+}
+
+function pathWalker(P, x, t, tp, id, extra) {
+  const o = { ...P, x, y: 626 - 104 * .95, s: .95, dir: -1, stride: .9, walk: x / 15, lean: .04, head: Math.max(0, 1 - Math.abs(t - tp + .4) / .35) * .2, handF: extra === 'stick' ? [x - 32, 560] : null };
+  const r = rig(o); drawPerson(o, r);
+  if (extra === 'stick') ink([[r.armF[2][0], r.armF[2][1]], [r.armF[2][0] - 14, 626]], { w: 3.5, stroke: '#6a4a2a', id: id + 50 });
+  return r;
+}
+function dog(x, t, id) {
+  const b = Math.abs(Math.sin(t * 9)) * 6, y = 640;
+  ink([[x - 30, y - 30 - b], [x + 20, y - 30 - b], [x + 26, y - 14 - b], [x - 30, y - 12 - b]], { fill: '#8a6a4a', id, w: 1.8 });
+  ink(ellPts([x - 40, y - 36 - b], 14, 11, 10), { fill: '#8a6a4a', id: id + 1, w: 1.8 });
+  ink([[x - 36, y - 46 - b], [x - 32, y - 56 - b], [x - 28, y - 44 - b]], { fill: '#6a4a2a', id: id + 2, w: 1.2 });
+  for (const [k, lx] of [[0, -24], [1, 14]]) { const s = Math.sin(t * 9 + k * 3) * 8; ink([[x + lx, y - 14 - b], [x + lx + s, y]], { w: 4, stroke: '#6a4a2a', id: id + 3 + k }); }
+  ink([[x + 24, y - 26 - b], [x + 40, y - 40 - b + Math.sin(t * 14) * 5]], { w: 3, stroke: '#8a6a4a', id: id + 6 });
+}
+const helenX = t => 300 + (t < 5.4 ? 120 * t : t < 6.6 ? 648 : 648 + 55 * (t - 6.6));
+function shotPath(u) {
+  const q = twos(u), hx = helenX(q);
+  CAM = { x: helenX(u) + 90, y: 420, z: 1.12 };
+  layer(.04, () => { const g = ctx.createLinearGradient(0, 0, 0, 380); g.addColorStop(0, '#d8e4ea'); g.addColorStop(1, '#f2efe4'); ctx.fillStyle = g; ctx.fillRect(-3000, -500, 8000, 1000); });
+  layer(.14, () => { ctx.fillStyle = '#9fb4bc'; ctx.fillRect(-3000, 330, 8000, 120); ctx.fillStyle = 'rgba(255,255,255,.4)'; for (let i = 0; i < 40; i++) ctx.fillRect(-1000 + i * 137, 350 + (i % 4) * 18, 30, 2); });
+  layer(.24, () => { ink([[1300, 380], [1500, 320], [1700, 300], [1900, 330], [1950, 400]], { fill: '#8f9a72', still: true, id: 9000, w: 1.5 }); stoneWall([[1690, 300], [1700, 270], [1716, 270], [1716, 300]], 9001); });
+  layer(.5, () => { const pts = [[-800, 520]]; for (let x = -800; x <= 3200; x += 200) pts.push([x, 420 + Math.sin(x * .004) * 30]); pts.push([3200, 700], [-800, 700]); ink(pts, { fill: '#a7b07a', still: true, id: 9002, w: 1.5 });
+    ink([[100, 260], [170, 260], [170, 470], [100, 470]], { fill: '#a89a84', sharp: true, still: true, id: 9003, w: 1.5 }); ink([[90, 260], [135, 200], [180, 260]], { fill: '#6a5a50', sharp: true, still: true, id: 9004, w: 1.5 });
+    ink([[180, 360], [360, 360], [360, 470], [180, 470]], { fill: '#b8aa92', sharp: true, still: true, id: 9005, w: 1.5 }); });
+  layer(1, () => {
+    ctx.fillStyle = '#93a466'; ctx.fillRect(-800, 560, 5000, 400);
+    ctx.fillStyle = '#c9b38a'; ctx.beginPath(); ctx.moveTo(-800, 612); for (let x = -800; x <= 4200; x += 100) ctx.lineTo(x, 610 + Math.sin(x * .01) * 4); ctx.lineTo(4200, 660); ctx.lineTo(-800, 660); ctx.closePath(); ctx.fill();
+    // pairs of walkers going the other way
+    const pairs = [[10.5, 'stick'], [14.6, 'dog']];
+    pairs.forEach(([tp, kind], i) => {
+      for (const k of [0, 1]) {
+        const x = helenX(tp) + 40 + k * 46 - 70 * (q - tp);
+        if (Math.abs(x - hx) > 1400) continue;
+        pathWalker({ id: 20 + i * 2 + k, c: ['#4a6a8a', '#8a3a3a', '#5a7a4a', '#c9a23a'][i * 2 + k], legC: '#3a3a3a', hair: k ? 'bun' : 'short', hairC: ['#3a2a22', '#a09a90'][k], hem: 22 }, x, q, tp, 9100 + i * 20 + k * 10, kind === 'stick' ? 'stick' : null);
+      }
+      if (kind === 'dog') dog(helenX(tp) - 30 - 70 * (q - tp), q, 9160);
+    });
+    const knee = K(q, [[0, 0], [5.4, 0], [5.6, 1], [6.4, 1], [6.6, 0]]);
+    const nod = [10.5, 14.6].reduce((a, t) => a + Math.max(0, 1 - Math.abs(q - t + .2) / .3), 0);
+    const moving = !(q > 5.4 && q < 6.6);
+    const o = { ...HELEN, x: hx, y: 640 - 104, s: 1, dir: 1, stride: moving ? (q < 5.4 ? 1.15 : .6) : 0, walk: q < 5.4 ? q * 9 : q * 5, lean: knee * .3 + (q < 5.4 ? .08 : .03), head: knee * .2 + nod * .22, handF: knee > .1 ? [hx + 18, 600] : null };
+    const r = rig(o); drawPerson(o, r); rucksack(r);
+  });
+  layer(1.6, () => { const r = R(9200); for (let i = 0; i < 40; i++) { const x = -600 + i * 170 + r() * 60; ink([[x, 760], [x + 6, 690 + r() * 20], [x + 14, 760]], { fill: '#6f8a4a', still: true, id: 9201 + i, w: 1.4 }); } });
+}
+
+function shotChapel(u) {
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 560], [7, 640]]), y: K(u, [[0, 400], [7, 420]]), z: K(u, [[0, 1.05], [7, 1.25], [20, 1.32]]) };
+  layer(.05, () => { const g = ctx.createLinearGradient(0, 0, 0, 400); g.addColorStop(0, '#cfdce4'); g.addColorStop(1, '#eeece2'); ctx.fillStyle = g; ctx.fillRect(-500, -500, W + 1000, 1000); });
+  layer(.15, () => { ctx.fillStyle = '#93aab4'; ctx.fillRect(-500, 330, W + 1000, 400); ctx.fillStyle = 'rgba(255,255,255,.45)'; for (let i = 0; i < 18; i++) ctx.fillRect(500 + i * 60, 350 + (i % 5) * 22, 26, 2); });
+  layer(.75, () => {
+    ink([[-200, 520], [300, 470], [700, 480], [1000, 520], [1000, 800], [-200, 800]], { fill: '#9aa66e', still: true, id: 9300, w: 1.5 });
+    stoneWall([[200, 220], [250, 190], [300, 220], [300, 500], [200, 500]], 9301);
+    ink([[236, 300], [250, 270], [264, 300], [264, 380], [236, 380]], { fill: '#cfdce4', still: true, id: 9302, w: 1.5 });
+    stoneWall([[300, 260], [470, 260], [470, 500], [300, 500]], 9303);
+    stoneWall([[470, 300], [500, 300], [500, 340], [530, 340], [530, 410], [560, 410], [560, 500], [470, 500]], 9304);
+    ctx.strokeStyle = 'rgba(80,70,60,.3)'; ctx.lineWidth = 1; for (let y = 280; y < 500; y += 22) { ctx.beginPath(); ctx.moveTo(200, y); ctx.lineTo(560, y); ctx.stroke(); }
+    ink([[640, 500], [640, 420]], { w: 5, stroke: '#5a4a3a', still: true, id: 9305 });
+    ink([[600, 380], [690, 380], [690, 430], [600, 430]], { fill: '#f2ede0', sharp: true, still: true, id: 9306, w: 1.5 });
+    ctx.fillStyle = '#3a3430'; ctx.font = '8px ' + UI; ctx.fillText('Please do not climb', 606, 398); ctx.fillText('the walls', 606, 410);
+  });
+  layer(1, () => {
+    ink([[-300, 620], [W + 300, 600], [W + 300, 900], [-300, 900]], { fill: '#8f9a62', still: true, id: 9310, w: 1.5 });
+    ink([[520, 566], [760, 560], [770, 620], [510, 626]], { fill: '#a8a294', still: true, id: 9311, w: 2 });
+    // ghost of Martin: the remembered figure, all outline and no colour
+    const g = ease(seg(q, 7.4, 9)) * (1 - ease(seg(q, 17.6, 19.4)));
+    if (g > 0) {
+      const point = K(q, [[0, 0], [14.6, 0], [15.2, 1], [17, 1], [17.4, 0]]);
+      ctx.save(); ctx.globalAlpha = g * .55;
+      const og = { ...GHOST, x: 830, y: 612 - 104 * 1.05, s: 1.05, dir: 1, lean: 0, head: -.05 - point * .1, handF: point > .01 ? [lerp(860, 950, point), lerp(560, 470, point)] : null };
+      drawPerson(og, rig(og));
+      ctx.restore();
+      const said = [[10, 'the buses are unreliable', 700, 225], [12.4, 'proper socks matter more than expensive boots', 600, 268], [14.6, 'I once saw a seal from this very headland', 640, 311]];
+      ctx.save(); ctx.font = '30px ' + HAND; ctx.fillStyle = BLUEINK; ctx.globalAlpha = g;
+      for (const [t0, txt, x, y] of said) writeOn(txt, x, y, ease(seg(q, t0, t0 + 2)));
+      ctx.restore();
+    }
+    const balloon = ease(seg(q, 17.6, 18.4)) * (1 - ease(seg(q, 20.6, 21.6)));
+    if (balloon > 0) { ctx.save(); ctx.globalAlpha = balloon; ctx.setLineDash([4, 8]); ctx.lineCap = 'round'; ctx.strokeStyle = '#6a7a8a'; ctx.lineWidth = 3; ctx.beginPath(); ctx.ellipse(975, 400, 80, 46, 0, 0, 7); ctx.stroke(); ctx.beginPath(); ctx.moveTo(918, 430); ctx.lineTo(880, 452); ctx.lineTo(930, 440); ctx.stroke(); ctx.restore(); }
+    const bite = [4.4, 5.8, 12, 19].reduce((a, t) => a + Math.max(0, 1 - Math.abs(q - t) / .5), 0);
+    const o = { ...HELEN, seated: true, kneeUp: 4, seatH: 60, x: 640, y: 562, s: 1, dir: 1, lean: .05, head: K(q, [[0, .05], [7.2, .05], [7.8, -.12], [17.4, -.12], [18, .15]]), handF: mix([690, 545], [672, 478], Math.min(1, bite)), handB: [660, 552] };
+    const r = rig(o); drawPerson(o, r);
+    const h = r.armF[2]; ink([[h[0] - 4, h[1] - 14], [h[0] + 16, h[1] - 10], [h[0] - 4, h[1] + 6]], { fill: '#f2e6c4', id: 9320, w: 1.4 });
+    ink([[560, 600], [600, 572], [620, 610]], { fill: '#3f6b6b', id: 9321, w: 1.8 });
+  });
+}
+
+function shotTide(u) {
+  const q = twos(u);
+  CAM = { x: lerp(620, 680, ease(u / 12)), y: 380, z: 1.05 };
+  const cold = ease(seg(u, 7, 12));
+  layer(.1, () => { ctx.fillStyle = '#d6e0e4'; ctx.fillRect(-500, -500, W + 1000, 1000); ctx.fillStyle = '#8fa4ae'; ctx.fillRect(-500, 140, W + 1000, 90); });
+  layer(.6, () => {
+    ctx.fillStyle = '#d8c7a2'; ctx.fillRect(-500, 225, W + 1000, 600);
+    ctx.fillStyle = 'rgba(140,160,170,.35)'; for (let i = 0; i < 14; i++) { ctx.beginPath(); ctx.ellipse(-200 + i * 120, 280 + (i % 4) * 70, 90, 12, 0, 0, 7); ctx.fill(); }
+    ctx.strokeStyle = 'rgba(150,130,100,.4)'; ctx.lineWidth = 1.5; for (let i = 0; i < 30; i++) { ctx.beginPath(); ctx.moveTo(-200 + i * 60, 420 + (i % 5) * 30); ctx.quadraticCurveTo(-180 + i * 60, 414 + (i % 5) * 30, -160 + i * 60, 420 + (i % 5) * 30); ctx.stroke(); }
+    // two children crossing the sand, stopping to look at things
+    for (const k of [0, 1]) {
+      const stop = (q + k * .8) % 3 > 2, x = 260 + k * 30 + q * 38 - Math.floor((q + k * .8) / 3) * 22;
+      const o = { id: 30 + k, c: ['#c0392b', '#e0a030'][k], legC: '#3a4a6a', hair: 'short', hairC: '#5a3a22', hem: 14, x, y: 400 - k * 6, s: .32, dir: 1, stride: stop ? 0 : 1, walk: q * 10 + k, lean: stop ? .7 : .05, head: stop ? .3 : 0 };
+      drawPerson(o, rig(o));
+    }
+  });
+  layer(1, () => {
+    ink([[-300, 560], [200, 520], [420, 600], [520, 760], [-300, 760]], { fill: '#8f9a62', still: true, id: 9400, w: 1.5 });
+    const o = { ...HELEN, seated: true, kneeUp: 4, seatH: 30, x: 170, y: 540, s: .45, dir: 1, lean: .1 + cold * .1, head: .1 };
+    const r = rig(o); drawPerson(o, r);
+  });
+  ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.fillStyle = `rgba(150,170,200,${cold * .35})`; ctx.fillRect(0, 0, W, H); ctx.restore();
+  if (cold > 0) { ctx.save(); ctx.strokeStyle = `rgba(255,255,255,${cold * .5})`; ctx.lineWidth = 2; for (let i = 0; i < 6; i++) { const x = ((q * 300 + i * 260) % 1500) - 100, y = 200 + i * 70; ctx.beginPath(); ctx.moveTo(x, y); ctx.quadraticCurveTo(x + 40, y - 8, x + 90, y); ctx.stroke(); } ctx.restore(); }
+}
+
+function shotVan(u) {
+  const q = twos(u);
+  CAM = { x: 700, y: 420, z: K(u, [[0, 1.2], [9, 1.36]]) };
+  road(true);
+  layer(.45, () => { ink([[160, 120], [300, 120], [300, 500], [160, 500]], { fill: '#b0a28c', sharp: true, still: true, id: 9500, w: 1.5 }); ink([[150, 120], [230, 40], [310, 120]], { fill: '#6a5a50', sharp: true, still: true, id: 9501, w: 1.5 }); ink([[300, 300], [700, 300], [700, 500], [300, 500]], { fill: '#bcae96', sharp: true, still: true, id: 9502, w: 1.5 }); });
+  layer(.85, () => { ctx.fillStyle = '#a49c8c'; ctx.fillRect(-400, 500, W + 800, 140); });
+  const give = K(q, [[0, 0], [3.9, 0], [4.6, 1]]), took = q > 5;
+  layer(1, () => {
+    ctx.fillStyle = '#bdb5a4'; ctx.fillRect(-400, 616, W + 800, 300);
+    ink(ellPts([780, 610], 30, 30, 14), { fill: '#222', still: true, id: 9510, w: 2 }); ink(ellPts([1100, 610], 30, 30, 14), { fill: '#222', still: true, id: 9511, w: 2 });
+    ink([[700, 260], [1180, 260], [1190, 600], [690, 600]], { fill: '#e8dcc0', sharp: true, id: 9512, w: 2.5, still: true });
+    ink([[760, 320], [1060, 320], [1060, 470], [760, 470]], { fill: '#4a3a30', sharp: true, id: 9513, w: 2, still: true });
+    ink([[740, 300], [1080, 300], [1100, 330], [720, 330]], { fill: '#c0392b', sharp: true, id: 9514, w: 1.5, still: true });
+    ctx.fillStyle = '#4a3a30'; ctx.font = 'italic 26px ' + SERIF; ctx.fillText('Teas', 900, 520);
+    ctx.save(); ctx.beginPath(); ctx.rect(760, 320, 300, 150); ctx.clip();
+    const om = { id: 12, c: '#3a5a7a', legC: '#333', hair: 'short', hairC: '#2a1a12', hat: 'cap', hatC: '#2a2a2a', x: 900, y: 560, s: 1, dir: -1, lean: .08, head: .05, handF: mix([870, 470], [780, 450], took ? 0 : give) };
+    drawPerson(om, rig(om)); ctx.restore();
+    ink([[750, 470], [1070, 470], [1070, 482], [750, 482]], { fill: '#8a6a4a', sharp: true, id: 9515, w: 1.5, still: true });
+    const sip = Math.max(0, 1 - Math.abs(q - 10.6) / .7) + Math.max(0, 1 - Math.abs(q - 12.6) / .7);
+    const o = { ...HELEN, x: 600, y: 616 - 104, s: 1, dir: 1, lean: .04, head: K(q, [[0, -.1], [7, -.1], [7.4, .02]]), handF: took ? mix([650, 520], [640, 476], Math.min(1, sip)) : [lerp(640, 760, give), lerp(540, 462, give)] };
+    const r = rig(o); drawPerson(o, r); rucksack(r);
+    const cp = took ? r.armF[2] : (give > .95 ? [778, 452] : [lerp(870, 780, give), lerp(462, 452, give)]);
+    ink([[cp[0] - 9, cp[1] - 18], [cp[0] + 9, cp[1] - 18], [cp[0] + 7, cp[1] + 1], [cp[0] - 7, cp[1] + 1]], { fill: '#f2efe8', sharp: true, id: 9520, w: 1.6 });
+    for (let k = 0; k < 2; k++) { const pts = []; for (let i = 0; i < 5; i++) pts.push([cp[0] - 3 + k * 6 + Math.sin(q * 2 + i + k * 2) * 3, cp[1] - 22 - i * 8]); ink(pts, { w: 1.6, stroke: 'rgba(255,255,255,.6)', id: 9521 + k }); }
+  });
+}
+
+function shotEnd(u) {
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 700], [4, 860], [8.6, 860], [14, 660]]), y: K(u, [[0, 360], [4, 220], [8.6, 220], [14, 360]]), z: K(u, [[0, 1.05], [4, 1.5], [8.6, 1.5], [14, 1.0]]) };
+  layer(.9, () => { ctx.fillStyle = '#7a5e44'; ctx.fillRect(-400, -400, W + 800, H + 800); for (let y = -300; y < H + 300; y += 70) { ctx.fillStyle = 'rgba(40,25,15,.4)'; ctx.fillRect(-400, y, W + 800, 5); } });
+  layer(1, () => {
+    ctx.save(); ctx.translate(640, 360); ctx.rotate(-.03); ctx.translate(-450, -280);
+    ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.fillRect(10, 12, 900, 560);
+    coastMap(1, 1);
+    // the breeze lifts one corner
+    const lift = K(q, [[0, 0], [4.2, 0], [4.6, .7], [5, .45], [5.4, .9], [5.9, .6], [6.3, .05], [6.5, 0]]) + (q > 4.2 && q < 6.3 ? Math.sin(q * 17) * .05 : 0);
+    if (lift > .02) {
+      const s = 150 * lift;
+      ctx.fillStyle = '#7a5e44'; ctx.beginPath(); ctx.moveTo(900, 0); ctx.lineTo(900 - s, 0); ctx.lineTo(900, s); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = 'rgba(0,0,0,.2)'; ctx.beginPath(); ctx.moveTo(900 - s, 0); ctx.lineTo(900, s); ctx.lineTo(900 - s * .7, s * .9); ctx.closePath(); ctx.fill();
+      ink([[900 - s, 0], [900, s], [900 - s * .8, s * .8]], { fill: '#f6efdc', id: 9600, w: 1.6 });
+    }
+    ctx.restore();
+    const palm = ease(seg(q, 5.6, 6.4));
+    topHand(lerp(1300, 1045, palm), lerp(760, 52, palm), -.75, 9610, HELEN.c, HELEN.skin, palm);
+    topHand(220, 640, .5, 9620, HELEN.c, HELEN.skin);
+  });
+}
+
+// ---------- the exposure sheet ----------
+const SHOTS = [
+  { dur: 5, draw: shotTitle, caps: [] },
+  { dur: 14, draw: shotDrawer, caps: [[.3, 3.8, 'On her last afternoon at the library, Helen emptied the drawer everyone had always called hers.'], [4, 9.6, 'There were rubber bands that broke when she stretched them, a spectacle case without spectacles, and three photographs of the staff standing beside different Christmas trees.'], [10, 12, 'At the bottom lay a folded map.'], [12.2, 13.8, 'Martin had given it to her.']] },
+  { dur: 22, draw: shotMemory, caps: [[.3, 4.8, 'He used to go walking on Sundays. On Mondays he came in with mud still caught in the seams of his boots and described places Helen had never heard of, though most were less than an hour away.'], [5, 7, '“You’d like this one,” he would say.'], [7.2, 9.2, 'For a while, he had asked her to come.'], [9.4, 13.6, 'There had been reasons not to. Her mother needed groceries. The garden had got away from her. Once, the forecast was rain.'], [13.8, 15.6, '“Another Sunday,” Helen always said.'], [16, 21.6, 'Eventually he began telling her about the walks without suggesting she join him. She had found this easier.']] },
+  { dur: 13, draw: shotMap, caps: [[.3, 5.4, 'The map was of the coast. In blue ink he had marked a route from a village called Bellwick to a ruined chapel.'], [5.6, 7.4, 'Beside the bus stop he had written:']] },
+  { dur: 15, draw: shotCards, caps: [[.3, 3.5, 'Martin had left the library eleven years ago to live near his daughter.'], [3.8, 8.2, 'They exchanged Christmas cards until his arrived one February with an apology about his eyesight.'], [8.5, 11, 'Helen had written back in larger letters.'], [11.4, 14.6, 'There had been no card the following year.']] },
+  { dur: 5, draw: shotHandbag, caps: [[.3, 4.6, 'She put the map in her handbag.']] },
+  { dur: 7, draw: shotClock, caps: [[.3, 6.6, 'On Sunday she woke before the alarm.']] },
+  { dur: 13, draw: shotPack, caps: [[.3, 4.6, 'It took her some time to find the small rucksack she had bought for a holiday and never used again.'], [4.8, 12.6, 'She packed a cheese sandwich, an apple, and a cardigan.']] },
+  { dur: 13, draw: shotBusStop, caps: [[.3, 3.4, 'The bus now left at eight twenty-five.']] },
+  { dur: 14, draw: shotCafe, caps: [[.3, 3.2, 'Bellwick was smaller than she had imagined.'], [3.4, 7.4, 'The café was still there, but it sold candles and expensive soap.'], [7.6, 12.8, 'She stood outside it for a moment, looking through the window at a woman arranging pale green bottles.']] },
+  { dur: 18, draw: shotPath, caps: [[.3, 2.6, 'The path began behind the church.'], [2.8, 5.2, 'At first Helen walked too quickly.'], [5.4, 8.4, 'Then her knee started to ache, and she slowed down.'], [8.6, 13, 'People passed her in pairs, carrying walking sticks or calling to dogs.'], [13.2, 17.6, 'Most said good morning. She answered each of them.']] },
+  { dur: 23, draw: shotChapel, caps: [[.3, 3.6, 'At the chapel there were three walls and a notice asking visitors not to climb them.'], [3.8, 6.8, 'Helen sat on a low stretch of stone and ate her sandwich.'], [7.2, 9.6, 'She tried to remember Martin’s voice.'], [9.8, 17.2, 'She could remember the things he said: that the buses were unreliable, that proper socks mattered more than expensive boots, that he had once seen a seal from this very headland.'], [17.6, 21, 'But the voice itself would not come.']] },
+  { dur: 12, draw: shotTide, caps: [[.3, 5, 'Below her, the tide was out. Two children crossed the exposed sand, stopping frequently to examine things.'], [6, 9.6, 'She stayed until she felt cold.']] },
+  { dur: 14, draw: shotVan, caps: [[.3, 3.6, 'On the way back, she bought a cup of tea from a van beside the church.'], [3.8, 6.6, 'The young man serving asked whether she’d had a good walk.'], [7, 9.4, '“Yes,” she said. “Lovely.”']] },
+  { dur: 16, draw: shotEnd, caps: [[.3, 4, 'At the bus stop she unfolded the map to check the route she had taken.'], [4.2, 7.8, 'A breeze lifted one corner, and she put her palm over it.'], [8.6, 13.6, 'She had expected, somehow, to find more of his writing.']] },
+];
+
+// Reading time: every caption stays up long enough to read (about 175 words a minute).
+// Where the action under a caption is shorter than that, it first plays slower (up to
+// STRETCH times), then holds its last pose for whatever time is still needed.
+const READ = text => 1.2 + text.split(/\s+/).length / 2.9, STRETCH = 1.5;
+for (const S of SHOTS) {
+  const knots = [[0, 0]]; let real = 0, story = 0;
+  S.realCaps = [];
+  for (const [a, b, text] of S.caps) {
+    real += a - story; story = a; knots.push([story, real]);
+    const ra = real, avail = b - a, need = READ(text), k = Math.min(STRETCH, Math.max(1, need / avail));
+    real += avail * k; story = b; knots.push([story, real]);
+    if (need > avail * k) { real += need - avail * k; knots.push([story, real]); }
+    S.realCaps.push([ra, real, text]);
+  }
+  real += S.dur - story; knots.push([S.dur, real]);
+  S.knots = knots; S.real = real;
+}
+// Map time on the screen to time in the shot's own action.
+function storyTime(S, r) {
+  const k = S.knots;
+  for (let i = 1; i < k.length; i++) if (r <= k[i][1]) { const [s0, r0] = k[i - 1], [s1, r1] = k[i]; return r1 > r0 ? s0 + (s1 - s0) * (r - r0) / (r1 - r0) : s1; }
+  return S.dur;
+}
+const TOTAL = SHOTS.reduce((a, s) => a + s.real, 0);
+
+function wrap(text, max) {
+  const words = text.split(' '), lines = []; let line = '';
+  for (const w of words) { const t = line ? line + ' ' + w : w; if (ctx.measureText(t).width > max && line) { lines.push(line); line = w; } else line = t; }
+  if (line) lines.push(line);
+  return lines;
+}
+function caption(text, a) {
+  ctx.save(); ctx.globalAlpha = a;
+  const g = ctx.createLinearGradient(0, H - 200, 0, H); g.addColorStop(0, 'rgba(15,12,10,0)'); g.addColorStop(.5, 'rgba(15,12,10,.5)'); g.addColorStop(1, 'rgba(15,12,10,.75)');
+  ctx.fillStyle = g; ctx.fillRect(0, H - 200, W, 200);
+  ctx.font = 'italic 27px ' + SERIF; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  const lines = wrap(text, 1000); let y = H - 46 - (lines.length - 1) * 36;
+  ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 8; ctx.fillStyle = '#f5ecdb';
+  for (const l of lines) { ctx.fillText(l, W / 2, y); y += 36; }
+  ctx.restore();
+}
+const GRAIN = [0, 1, 2].map(k => {
+  const c = document.createElement('canvas'); c.width = 320; c.height = 180;
+  const g = c.getContext('2d'), im = g.createImageData(320, 180), r = R(55 + k);
+  for (let i = 0; i < im.data.length; i += 4) { const v = 205 + r() * 50; im.data[i] = v; im.data[i + 1] = v * .985; im.data[i + 2] = v * .95; im.data[i + 3] = 255; }
+  g.putImageData(im, 0, 0); return c;
+});
+
+function render(t) {
+  BOIL = Math.floor(t * 8);
+  let acc = 0, i = 0;
+  while (i < SHOTS.length - 1 && t >= acc + SHOTS[i].real) { acc += SHOTS[i].real; i++; }
+  const S = SHOTS[i], r = t - acc, u = storyTime(S, r);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cvs.width, cvs.height);
+  ctx.setTransform(VIEW.k, 0, 0, VIEW.k, VIEW.ox, VIEW.oy);
+  ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
+  ctx.save(); S.draw(u); ctx.restore();
+  ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.globalAlpha = .45; ctx.drawImage(GRAIN[BOIL % 3], 0, 0, W, H); ctx.restore();
+  const v = ctx.createRadialGradient(W / 2, H / 2, H * .45, W / 2, H / 2, H * 1.05);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(10,6,3,.45)'); ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+  const fade = Math.max(0, 1 - r / .5, 1 - (S.real - r) / .5);
+  if (fade > 0) { ctx.fillStyle = `rgba(18,15,12,${fade})`; ctx.fillRect(0, 0, W, H); }
+  for (const [a, b, text] of S.realCaps) {
+    if (r > a && r < b) caption(text, Math.min(1, (r - a) / .35, (b - r) / .35));
+  }
+  ctx.restore();
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2), cw = innerWidth, ch = innerHeight;
+  cvs.width = Math.round(cw * dpr); cvs.height = Math.round(ch * dpr);
+  cvs.style.width = cw + 'px'; cvs.style.height = ch + 'px';
+  const k = Math.min(cw / W, ch / H) * dpr;
+  VIEW = { k, ox: (cvs.width - W * k) / 2, oy: (cvs.height - H * k) / 2 };
+}
+const FIX = new URLSearchParams(location.search).get('t');
+if (new URLSearchParams(location.search).has('debug')) { let a = 0; console.log('TOTAL ' + TOTAL.toFixed(1) + ' starts ' + SHOTS.map(S => { const x = a; a += S.real; return x.toFixed(1); }).join(',')); }
+let clock = 0, last = null, paused = false;
+let ended = false;
+function frame(now) {
+  if (last !== null && !paused && !ended) clock += Math.min(.1, (now - last) / 1000);
+  last = now;
+  if (clock >= TOTAL - .001) { clock = TOTAL - .001; ended = true; }
+  render(clock);
+  if (ended) endCard();
+  requestAnimationFrame(frame);
+}
+// The film plays once and stops on its last (faded) frame with an offer to watch again.
+function endCard() {
+  ctx.setTransform(VIEW.k, 0, 0, VIEW.k, VIEW.ox, VIEW.oy);
+  ctx.save(); ctx.font = 'italic 34px ' + SERIF; ctx.textAlign = 'center'; ctx.fillStyle = '#f5ecdb';
+  ctx.fillText('\u21bb  Watch again', W / 2, H / 2 + 12); ctx.restore();
+}
+function toggle() { if (ended) { clock = 0; ended = false; paused = false; } else paused = !paused; }
+addEventListener('resize', () => { resize(); if (FIX !== null) render(parseFloat(FIX)); });
+addEventListener('click', toggle);
+addEventListener('keydown', e => { if (e.key === ' ') { toggle(); e.preventDefault(); } });
+resize();
+// A held frame is redrawn for its first second, in case the page is still being sized.
+let held = 0;
+function hold() { resize(); render(parseFloat(FIX)); if (++held < 60) requestAnimationFrame(hold); }
+if (FIX !== null) hold(); else requestAnimationFrame(frame);
+</script>
+</body>
+</html>
