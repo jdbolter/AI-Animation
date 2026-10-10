@@ -13,6 +13,21 @@
     "poster": "poster.png"
   },
   {
+    "slug": "the-sunday-bus-narrated",
+    "dir": "the-sunday-bus",
+    "file": "narrated.html",
+    "title": "The Sunday Bus (read aloud)",
+    "direction": "On her last afternoon at the library, Helen emptied the drawer everyone had always called hers.",
+    "type": "html",
+    "aspect": "16 / 9",
+    "previewTime": 222,
+    "poster": "poster.png",
+    "model": "Claude Opus 5.5",
+    "date": "2026-10-10",
+    "prompt": "prompt.txt",
+    "notes": "The Sunday Bus with a reader's voice: every caption is read aloud, and so are the title and Martin's note on the map. The voice is AI-generated (OpenAI gpt-4o-mini-tts, voice “fable”, asked for a British reader), made once with narrate.py and played from audio files. Each caption stays up until its line has been spoken, so the film runs a little longer than the silent one. Click to begin; the button at the top right turns the sound off and on."
+  },
+  {
     "slug": "o-autocarro-de-domingo",
     "title": "O Autocarro de Domingo",
     "direction": "Na sua última tarde na biblioteca, a Helen esvaziou a gaveta a que todos sempre tinham chamado sua.",

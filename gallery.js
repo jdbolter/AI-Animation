@@ -1,7 +1,8 @@
 // Shared helpers for the gallery and watch pages.
 
+// An entry can share another's folder (e.g. a read-aloud version) by naming it in "dir".
 function animationDir(a) {
-  return 'animations/' + a.slug + '/';
+  return 'animations/' + (a.dir || a.slug) + '/';
 }
 
 // The file to play: "index.html" by default for HTML animations.
