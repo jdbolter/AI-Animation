@@ -52,6 +52,19 @@
     "poster": "poster.png"
   },
   {
+    "slug": "der-sonntagsbus",
+    "title": "Der Sonntagsbus",
+    "direction": "Am letzten Nachmittag in der Bibliothek leerte Helen die Schublade, die alle immer ihre genannt hatten.",
+    "type": "html",
+    "aspect": "16 / 9",
+    "previewTime": 222,
+    "model": "Claude Sonnet 5.5",
+    "date": "2026-10-10",
+    "prompt": "prompt.txt",
+    "notes": "The same film as The Sunday Bus, in German: captions, map labels, handwriting, signs and the title are all translated. About six and a half minutes, because the German captions use the slower reading pace (about 120 words a minute) and hold scenes rather than speed the action. Click the animation to pause it.",
+    "poster": "poster.png"
+  },
+  {
     "slug": "the-missing-tree",
     "title": "The Missing Tree",
     "direction": "The complaint arrived during the first hot week. Your shaded route has no shade.",
