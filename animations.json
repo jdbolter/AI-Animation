@@ -1,29 +1,16 @@
 [
   {
-    "slug": "vr-film-uncanny",
-    "title": "VR, Film, and the Far Side of the Uncanny Valley",
-    "direction": "An animated essay after the essay by Jay Bolter and Maria Engberg.",
+    "slug": "the-sunday-bus",
+    "title": "The Sunday Bus",
+    "direction": "On her last afternoon at the library, Helen emptied the drawer everyone had always called hers.",
     "type": "html",
     "aspect": "16 / 9",
-    "previewTime": 82,
-    "poster": "poster.png",
+    "previewTime": 222,
     "model": "Claude Opus 5.5",
-    "date": "2026-10-10",
+    "date": "2026-10-09",
     "prompt": "prompt.txt",
-    "notes": "About twenty minutes, in five chapters following the essay's sections. The essay (about 7,200 words) is distilled into roughly a third as many words of captions, mostly in its own phrasing, with concrete images where possible and diagrams where necessary: Mori's graph with a walker who falls into the valley, the Lumière train in a flinching theatre, the asymptote of film's resemblance to life, the La Ciotat myth and effect, Benjamin's fading aura, Freud's heimlich and unheimlich, the Body Snatchers pods, the doubles of Us, Todorov's hesitation, avatars, the Hawaii alert, codec-avatar busts, and the layered gap of VR embodiment. The codec avatars are generic figures, not likenesses. Click the animation to pause it."
-  },
-  {
-    "slug": "the-landing",
-    "title": "The Landing",
-    "direction": "The building had six floors and a laundry room in the basement.",
-    "type": "html",
-    "aspect": "16 / 9",
-    "previewTime": 412,
-    "poster": "poster.png",
-    "model": "Claude Opus 5.5",
-    "date": "2026-10-10",
-    "prompt": "prompt.txt",
-    "notes": "About seven and a half minutes, in twenty shots, paced so every caption can be read. The story is long, so the film is an adaptation: it keeps the key moments and uses the story's own words for its captions, with some lines shortened or joined. The fourth-floor landing is the recurring set; objects carry the story (the washing machine that has to be told twice, the saucepan, the folder moved off a café chair, messages typed and deleted, the bookcase and its pale ring). The surnames on the nameplate are invented. Click the animation to pause it."
+    "notes": "About four and three-quarter minutes, in fifteen shots, drawn in code on a canvas with the same approach as the other two films, and paced so every caption can be read. The Mondays at the library are a sepia memory, with the calendar flipping faster as the invitations stop; Martin's route and note write themselves onto the map in blue ink; at the chapel he returns only as an outline, his sayings in his handwriting and his speech balloon empty. Click the animation to pause it.",
+    "poster": "poster.png"
   },
   {
     "slug": "o-autocarro-de-domingo",
@@ -39,19 +26,6 @@
     "notes": "The Portuguese (European) version of The Sunday Bus: captions and on-screen writing are in Portuguese, and it follows the translation's different ending, in which Helen turns the map over and finds the back blank. Click the animation to pause it."
   },
   {
-    "slug": "the-sunday-bus",
-    "title": "The Sunday Bus",
-    "direction": "On her last afternoon at the library, Helen emptied the drawer everyone had always called hers.",
-    "type": "html",
-    "aspect": "16 / 9",
-    "previewTime": 222,
-    "model": "Claude Opus 5.5",
-    "date": "2026-10-09",
-    "prompt": "prompt.txt",
-    "notes": "About four and three-quarter minutes, in fifteen shots, drawn in code on a canvas with the same approach as the other two films, and paced so every caption can be read. The Mondays at the library are a sepia memory, with the calendar flipping faster as the invitations stop; Martin's route and note write themselves onto the map in blue ink; at the chapel he returns only as an outline, his sayings in his handwriting and his speech balloon empty. Click the animation to pause it.",
-    "poster": "poster.png"
-  },
-  {
     "slug": "der-sonntagsbus",
     "title": "Der Sonntagsbus",
     "direction": "Am letzten Nachmittag in der Bibliothek leerte Helen die Schublade, die alle immer ihre genannt hatten.",
@@ -63,6 +37,19 @@
     "prompt": "prompt.txt",
     "notes": "The same film as The Sunday Bus, in German: captions, map labels, handwriting, signs and the title are all translated. About six and a half minutes, because the German captions use the slower reading pace (about 120 words a minute) and hold scenes rather than speed the action. Click the animation to pause it.",
     "poster": "poster.png"
+  },
+  {
+    "slug": "the-landing",
+    "title": "The Landing",
+    "direction": "The building had six floors and a laundry room in the basement.",
+    "type": "html",
+    "aspect": "16 / 9",
+    "previewTime": 412,
+    "poster": "poster.png",
+    "model": "Claude Opus 5.5",
+    "date": "2026-10-10",
+    "prompt": "prompt.txt",
+    "notes": "About seven and a half minutes, in twenty shots, paced so every caption can be read. The story is long, so the film is an adaptation: it keeps the key moments and uses the story's own words for its captions, with some lines shortened or joined. The fourth-floor landing is the recurring set; objects carry the story (the washing machine that has to be told twice, the saucepan, the folder moved off a café chair, messages typed and deleted, the bookcase and its pale ring). The surnames on the nameplate are invented. Click the animation to pause it."
   },
   {
     "slug": "the-missing-tree",
@@ -89,5 +76,33 @@
     "prompt": "prompt.txt",
     "notes": "About two minutes, in ten shots, drawn in code on a canvas. Characters are animated on twos with boiling ink lines over still painted backgrounds, with multiplane parallax and narration captions taken from the story. Some exchanges (“Mine shows where we cannot read”) and the afternoon of revisions are left out for length. Click the animation to pause it.",
     "poster": "poster.png"
+  },
+  {
+    "slug": "das-grimmsche-gesetz",
+    "title": "Das Grimmsche Gesetz",
+    "direction": "Das Grimmsche Gesetz – im Deutschen fachsprachlich als Erste Lautverschiebung bekannt – markiert den Moment, in dem sich das Urgermanische im 1. Jahrtausend v. Chr. als eigenständige Sprachfamilie aus dem Indoeuropäischen herausbildete.",
+    "type": "html",
+    "section": "essay",
+    "aspect": "16 / 9",
+    "previewTime": 296,
+    "poster": "poster.png",
+    "model": "Claude Opus 5.5",
+    "date": "2026-10-10",
+    "prompt": "prompt.txt",
+    "notes": "An animated lecture in German, about seven and a half minutes, at the slower reading pace for German captions. The text's suggested visuals become the drawings: Grimm at his desk beneath a fairy-tale picture beside the 1822 title page of the Deutsche Grammatik, a map of the Germanic core area around 750–500 BC, a musical-chairs game of sound creatures, gears, one mechanism for each phase (a blocked pipe, a voice wave going flat, a puff of breath), Grimm's closed circle, and the cognate matrix, ending with genu, dent- and ager to decode. Each sound class keeps one colour throughout. A few additions for accuracy: Latin is shown as a cognate (\"entspricht\"), not an ancestor; examples for phase 3 (bhrātar/brother, thýra/door); a note that Zahn, Herz and zehn also show the second, High German shift. The Grimm figure is a generic drawing, not a likeness. Click the animation to pause it."
+  },
+  {
+    "slug": "vr-film-uncanny",
+    "title": "VR, Film, and the Far Side of the Uncanny Valley",
+    "direction": "An animated essay after the essay by Jay Bolter and Maria Engberg.",
+    "type": "html",
+    "section": "essay",
+    "aspect": "16 / 9",
+    "previewTime": 82,
+    "poster": "poster.png",
+    "model": "Claude Opus 5.5",
+    "date": "2026-10-10",
+    "prompt": "prompt.txt",
+    "notes": "About twenty minutes, in five chapters following the essay's sections. The essay (about 7,200 words) is distilled into roughly a third as many words of captions, mostly in its own phrasing, with concrete images where possible and diagrams where necessary: Mori's graph with a walker who falls into the valley, the Lumière train in a flinching theatre, the asymptote of film's resemblance to life, the La Ciotat myth and effect, Benjamin's fading aura, Freud's heimlich and unheimlich, the Body Snatchers pods, the doubles of Us, Todorov's hesitation, avatars, the Hawaii alert, codec-avatar busts, and the layered gap of VR embodiment. The codec avatars are generic figures, not likenesses. Click the animation to pause it."
   }
 ]

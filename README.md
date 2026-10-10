@@ -43,7 +43,7 @@ If an animation was made elsewhere:
    }
    ```
 
-   `slug` must match the folder name. For a video, use `"type": "video"` and `"file": "frog.mp4"`. `poster`, `model`, `date`, `prompt`, `notes`, `aspect` and `previewTime` are optional. Without a poster, the gallery card plays the animation itself; for an HTML animation that supports `?t=` (holding one frame), `previewTime` shows a still from that second instead.
+   `slug` must match the folder name. For a video, use `"type": "video"` and `"file": "frog.mp4"`. `poster`, `model`, `date`, `prompt`, `notes`, `aspect` and `previewTime` are optional. Without a poster, the gallery card plays the animation itself; for an HTML animation that supports `?t=` (holding one frame), `previewTime` shows a still from that second instead. The gallery has two sections, Fiction and Essays/Technical documents: add `"section": "essay"` for the second; entries without it are fiction. Cards appear in the order of `animations.json` within each section.
 
 ## Previewing locally
 

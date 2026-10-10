@@ -58,23 +58,41 @@ function renderThumb(a) {
   return thumb;
 }
 
+function renderCard(a) {
+  var card = el('a', 'card');
+  card.href = 'watch.html?a=' + encodeURIComponent(a.slug);
+  card.appendChild(renderThumb(a));
+  var body = el('div', 'card-body');
+  body.appendChild(el('h3', 'card-title', a.title));
+  if (a.direction) body.appendChild(el('p', 'card-direction', '“' + a.direction + '”'));
+  var meta = metaLine(a);
+  if (meta) body.appendChild(el('div', 'meta', meta));
+  card.appendChild(body);
+  return card;
+}
+
+// The gallery is split into sections by each entry's "section" field (fiction when absent).
+// Within a section, cards keep their order in animations.json.
+var SECTIONS = [
+  { key: 'fiction', title: 'Fiction' },
+  { key: 'essay', title: 'Essays/Technical documents' }
+];
+
 function renderGallery(list) {
   var gallery = document.getElementById('gallery');
   if (!list.length) {
     gallery.appendChild(el('p', 'empty', 'No animations yet.'));
     return;
   }
-  list.forEach(function (a) {
-    var card = el('a', 'card');
-    card.href = 'watch.html?a=' + encodeURIComponent(a.slug);
-    card.appendChild(renderThumb(a));
-    var body = el('div', 'card-body');
-    body.appendChild(el('h2', 'card-title', a.title));
-    if (a.direction) body.appendChild(el('p', 'card-direction', '“' + a.direction + '”'));
-    var meta = metaLine(a);
-    if (meta) body.appendChild(el('div', 'meta', meta));
-    card.appendChild(body);
-    gallery.appendChild(card);
+  SECTIONS.forEach(function (s) {
+    var items = list.filter(function (a) { return (a.section || 'fiction') === s.key; });
+    if (!items.length) return;
+    var section = el('section', 'gallery-section');
+    section.appendChild(el('h2', 'section-title', s.title));
+    var grid = el('div', 'gallery');
+    items.forEach(function (a) { grid.appendChild(renderCard(a)); });
+    section.appendChild(grid);
+    gallery.appendChild(section);
   });
 }
 
