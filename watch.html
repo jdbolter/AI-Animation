@@ -47,7 +47,8 @@
           player.appendChild(video);
         } else {
           var frame = el('iframe');
-          frame.src = animationFile(a);
+          // a fresh copy every time, so a revised film is never replaced by a cached one
+          frame.src = animationFile(a) + '?v=' + Date.now();
           frame.title = a.title;
           frame.setAttribute('sandbox', 'allow-scripts');
           player.appendChild(frame);

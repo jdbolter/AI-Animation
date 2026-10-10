@@ -1,5 +1,44 @@
 [
   {
+    "slug": "vr-film-uncanny",
+    "title": "VR, Film, and the Far Side of the Uncanny Valley",
+    "direction": "An animated essay after the essay by Jay Bolter and Maria Engberg.",
+    "type": "html",
+    "aspect": "16 / 9",
+    "previewTime": 82,
+    "poster": "poster.png",
+    "model": "Claude Opus 5.5",
+    "date": "2026-10-10",
+    "prompt": "prompt.txt",
+    "notes": "About twenty minutes, in five chapters following the essay's sections. The essay (about 7,200 words) is distilled into roughly a third as many words of captions, mostly in its own phrasing, with concrete images where possible and diagrams where necessary: Mori's graph with a walker who falls into the valley, the Lumière train in a flinching theatre, the asymptote of film's resemblance to life, the La Ciotat myth and effect, Benjamin's fading aura, Freud's heimlich and unheimlich, the Body Snatchers pods, the doubles of Us, Todorov's hesitation, avatars, the Hawaii alert, codec-avatar busts, and the layered gap of VR embodiment. The codec avatars are generic figures, not likenesses. Click the animation to pause it."
+  },
+  {
+    "slug": "the-landing",
+    "title": "The Landing",
+    "direction": "The building had six floors and a laundry room in the basement.",
+    "type": "html",
+    "aspect": "16 / 9",
+    "previewTime": 412,
+    "poster": "poster.png",
+    "model": "Claude Opus 5.5",
+    "date": "2026-10-10",
+    "prompt": "prompt.txt",
+    "notes": "About seven and a half minutes, in twenty shots, paced so every caption can be read. The story is long, so the film is an adaptation: it keeps the key moments and uses the story's own words for its captions, with some lines shortened or joined. The fourth-floor landing is the recurring set; objects carry the story (the washing machine that has to be told twice, the saucepan, the folder moved off a café chair, messages typed and deleted, the bookcase and its pale ring). The surnames on the nameplate are invented. Click the animation to pause it."
+  },
+  {
+    "slug": "o-autocarro-de-domingo",
+    "title": "O Autocarro de Domingo",
+    "direction": "Na sua última tarde na biblioteca, a Helen esvaziou a gaveta a que todos sempre tinham chamado sua.",
+    "type": "html",
+    "aspect": "16 / 9",
+    "previewTime": 315,
+    "poster": "poster.png",
+    "model": "Claude Opus 5.5",
+    "date": "2026-10-10",
+    "prompt": "prompt.txt",
+    "notes": "The Portuguese (European) version of The Sunday Bus: captions and on-screen writing are in Portuguese, and it follows the translation's different ending, in which Helen turns the map over and finds the back blank. Click the animation to pause it."
+  },
+  {
     "slug": "the-sunday-bus",
     "title": "The Sunday Bus",
     "direction": "On her last afternoon at the library, Helen emptied the drawer everyone had always called hers.",
