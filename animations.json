@@ -32,13 +32,14 @@
     "title": "O Autocarro de Domingo",
     "direction": "Na sua última tarde na biblioteca, a Helen esvaziou a gaveta a que todos sempre tinham chamado sua.",
     "type": "html",
+    "file": "narrated.html",
     "aspect": "16 / 9",
     "previewTime": 315,
     "poster": "poster.png",
     "model": "Claude Opus 5.5",
     "date": "2026-10-10",
     "prompt": "prompt.txt",
-    "notes": "The Portuguese (European) version of The Sunday Bus: captions and on-screen writing are in Portuguese, and it follows the translation's different ending, in which Helen turns the map over and finds the back blank. Click the animation to pause it."
+    "notes": "The Portuguese (European) version of The Sunday Bus: captions and on-screen writing are in Portuguese, and it follows the translation's different ending, in which Helen turns the map over and finds the back blank. It can also be read aloud in European Portuguese: the narration is off at the start, and the button at the top right turns it on (an AI-generated voice, OpenAI “marin”). Click the animation to pause it."
   },
   {
     "slug": "der-sonntagsbus",
