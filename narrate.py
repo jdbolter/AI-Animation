@@ -7,9 +7,11 @@
     python3 narrate.py o-autocarro-de-domingo --lang pt --samples   # European Portuguese
 
 Writes animations/<slug>/audio/<id>.mp3 and audio/narration.js (the clip list with durations,
-which the film's narrated.html reads). It reads every [start, end, 'text'] line in the film's
-SHOTS list: the captions, and `say` lines spoken without a caption. A clip is named after its
-text, voice and instructions, so re-running after editing one line only regenerates that clip.
+which the film's narrated.html reads). It reads every quoted line in the film's SHOTS list: the
+captions, and `say` lines spoken without a caption. A line followed by a language code, as in
+['end', 'To fit in.', 'en'], is read in that language (an English line in a Portuguese film gets
+a light Portuguese accent). A clip is named after its text, voice and instructions, so
+re-running after editing one line only regenerates that clip.
 
 Needs OPENAI_API_KEY in the environment. The speech service is used only here, when the
 film is made; visitors just play the mp3 files. To use another service (e.g. Speechify),
@@ -50,6 +52,13 @@ INSTRUCTIONS = {
         'Dialogue is read lightly, without acting out voices. '
         'Pacing: measured and unhurried, with natural pauses at commas and full stops.'
     ),
+    # English lines inside a Portuguese film: the same Lisbon reader, now speaking English.
+    'en@pt': (
+        'Language: English, read by a native speaker of European Portuguese from Lisbon who speaks '
+        'English fluently and clearly, with a light, natural Portuguese accent (not exaggerated, '
+        'not a caricature). Read each phrase as a short item in a list, with a small pause after each. '
+        'Tone: warm and friendly, like a language teacher. Pacing: unhurried.'
+    ),
 }
 
 
@@ -84,11 +93,19 @@ def duration(path):
 
 
 def captions(page):
-    """Caption texts in order, from the film's SHOTS list: [start, end, 'text'] entries."""
+    """Spoken lines in order, as (text, language or None), from the film's SHOTS list:
+    every quoted string except arguments to card functions (e.g. wordCard(1, 'caber'))
+    and the 'end' marker; a string followed by a two-letter code is in that language."""
     src = open(page, encoding='utf-8').read()
     shots = src[src.index('const SHOTS = ['):]
     shots = shots[:shots.index('\n];')]
-    return [re.sub(r"\\(.)", r'\1', t) for t in re.findall(r"\[[\d.]+, [\d.]+, '((?:[^'\\]|\\.)*)'\]", shots)]
+    out = []
+    for m in re.finditer(r"'((?:[^'\\]|\\.)*)'(?:\s*,\s*'([a-z]{2})')?", shots):
+        text = re.sub(r"\\(.)", r'\1', m.group(1))
+        if text == 'end' or re.search(r'\w+\(\d+,\s*$', shots[:m.start()][-40:]):
+            continue
+        out.append((text, m.group(2)))
+    return out
 
 
 def main():
@@ -96,7 +113,7 @@ def main():
     ap.add_argument('slug')
     ap.add_argument('--page', help='film file to read lines from (default narrated.html, else index.html)')
     ap.add_argument('--voice', default=VOICE)
-    ap.add_argument('--lang', default='en', choices=sorted(INSTRUCTIONS), help='language of the film (sets the reading instructions)')
+    ap.add_argument('--lang', default='en', choices=sorted(k for k in INSTRUCTIONS if '@' not in k), help='language of the film (sets the reading instructions)')
     ap.add_argument('--samples', action='store_true', help='read a few lines in several voices')
     a = ap.parse_args()
     instr = INSTRUCTIONS[a.lang]
@@ -109,7 +126,8 @@ def main():
     if a.samples:
         out = os.path.join(tempfile.gettempdir(), 'narration-samples', a.slug + '-' + a.lang)
         os.makedirs(out, exist_ok=True)
-        text = ' '.join(caps[:3] + [c for c in caps if c[0] in '“„»«—"'][:1])
+        main_lines = [t for t, l in caps if not l]
+        text = ' '.join(main_lines[1:4] + [c for c in main_lines if c[0] in '“„»«—"'][:1])
         for v in SAMPLE_VOICES:
             path = os.path.join(out, v + '.mp3')
             open(path, 'wb').write(speak(text, v, instr))
@@ -126,8 +144,10 @@ def main():
         if m:
             old = {c['tag']: c for c in json.loads(m.group(1))['clips']}
     clips = []
-    for text in caps:
-        tag = hashlib.sha1('\n'.join([MODEL, a.voice, instr, text]).encode()).hexdigest()[:12]
+    for text, lang in caps:
+        # a line in another language uses that language's instructions (with this film's accent if there is one)
+        ins = instr if not lang or lang == a.lang else INSTRUCTIONS.get(f'{lang}@{a.lang}', INSTRUCTIONS.get(lang, instr))
+        tag = hashlib.sha1('\n'.join([MODEL, a.voice, ins, text]).encode()).hexdigest()[:12]
         name = tag + '.mp3'
         path = os.path.join(audio, name)
         prev = old.get(tag)
@@ -136,7 +156,7 @@ def main():
                 os.rename(os.path.join(audio, prev['file']), path)
             clips.append({**prev, 'file': name}); continue
         print(f'{name}  {text[:70]}')
-        open(path, 'wb').write(speak(text, a.voice, instr))
+        open(path, 'wb').write(speak(text, a.voice, ins))
         clips.append({'file': name, 'dur': round(duration(path), 2), 'text': text, 'tag': tag})
     for f in os.listdir(audio):
         if f.endswith(('.mp3', '.m4a')) and f not in {c['file'] for c in clips}:

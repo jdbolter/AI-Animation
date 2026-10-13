@@ -94,6 +94,20 @@
     "poster": "poster.png"
   },
   {
+    "slug": "palavras-que-nao-cabem",
+    "title": "Palavras que não cabem em inglês",
+    "direction": "Little vignettes to illustrate words in Portuguese that have no simple English equivalent. Each animated scene will illustrate on of these words and explain in Portuguese what they mean and then list the English equivalent phrases.",
+    "type": "html",
+    "file": "narrated.html",
+    "aspect": "16 / 9",
+    "previewTime": 105,
+    "poster": "poster.png",
+    "model": "Claude Opus 5.5",
+    "date": "2026-10-13",
+    "prompt": "prompt.txt",
+    "notes": "About three and a half minutes: six comic vignettes, one for each verb (caber, aproveitar, desabafar, madrugar, pernoitar, caprichar), with one recurring character, Zé. Each opens on the word, explains it in European Portuguese in the captions, and ends on a pinned card with English equivalents. The gags: a suitcase that fits the boot only if Zé sits on it; a hotel breakfast that was “already paid for”; a storm cloud that drains out of Zé and settles over his friend; Zé up so early he has to wake the rooster («Deus ajuda quem cedo madruga»); one night in a bed too short for him; a cake finished with ruler, spirit level and tweezers, until the cherry proves too much for the table. Captions use the slower reading pace for a second language. It can also be read aloud: the narration is off at the start, and the button at the top right turns it on (an AI-generated voice, OpenAI “marin”, reading the Portuguese in a European accent and the English cards in English with a light Portuguese accent). Click the animation to pause it."
+  },
+  {
     "slug": "das-grimmsche-gesetz",
     "title": "Das Grimmsche Gesetz",
     "direction": "Das Grimmsche Gesetz – im Deutschen fachsprachlich als Erste Lautverschiebung bekannt – markiert den Moment, in dem sich das Urgermanische im 1. Jahrtausend v. Chr. als eigenständige Sprachfamilie aus dem Indoeuropäischen herausbildete.",
