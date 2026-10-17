@@ -1,0 +1,941 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Sheep and the Horses</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    canvas { display: block; cursor: pointer; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// The Sheep and the Horses: Schleicher's fable (1868), drawn in canvas as a multiplane cartoon.
+// Characters and effects are drawn "on twos" (12 drawings a second) with boiling ink lines;
+// backgrounds are painted once and stay still; the camera moves smoothly through the planes.
+// Add ?t=SECONDS to the URL to hold a single frame. Click to pause; it plays once, then click to watch again.
+
+const W = 1280, H = 720;
+const cvs = document.getElementById('c');
+let ctx = cvs.getContext('2d');
+let VIEW = { k: 1, ox: 0, oy: 0 };
+
+const INK = '#2a2420';
+const SERIF = '"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif';
+
+// ---------- math ----------
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, f) => a + (b - a) * f;
+const ease = f => { f = clamp(f); return f * f * (3 - 2 * f); };
+const easeOut = f => { f = clamp(f); return 1 - (1 - f) ** 3; };
+const easeIn = f => { f = clamp(f); return f * f * f; };
+const seg = (u, a, b) => clamp((u - a) / (b - a));
+const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+const twos = u => Math.floor(u * 12) / 12;
+const frac = x => x - Math.floor(x);
+function mix(a, b, f) { return Array.isArray(a) ? a.map((x, i) => x + (b[i] - x) * f) : a + (b - a) * f; }
+// Exposure-sheet keys: [[time, value], ...], eased between neighbours.
+function K(u, keys, e = ease) {
+  if (u <= keys[0][0]) return keys[0][1];
+  for (let i = 1; i < keys.length; i++) {
+    if (u < keys[i][0]) {
+      const [a, va] = keys[i - 1], [b, vb] = keys[i];
+      return mix(va, vb, e((u - a) / (b - a)));
+    }
+  }
+  return keys[keys.length - 1][1];
+}
+function R(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function rgb(h) { const n = parseInt(h.slice(1), 16); return [n >> 16, n >> 8 & 255, n & 255]; }
+function shade(h, a) {
+  let [r, g, b] = rgb(h);
+  const t = a < 0 ? 0 : 255, p = Math.abs(a);
+  r = Math.round(r + (t - r) * p); g = Math.round(g + (t - g) * p); b = Math.round(b + (t - b) * p);
+  return `rgb(${r},${g},${b})`;
+}
+function mixC(a, b, f) { const x = rgb(a), y = rgb(b); return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * clamp(f)).toString(16).padStart(2, '0')).join(''); }
+
+// ---------- ink ----------
+let BOIL = 0;
+function jitterPts(pts, amt, r) { return pts.map(p => [p[0] + (r() - .5) * 2 * amt, p[1] + (r() - .5) * 2 * amt]); }
+function tracePath(p, close, sharp) {
+  ctx.beginPath();
+  if (sharp || p.length < 3) {
+    ctx.moveTo(p[0][0], p[0][1]);
+    for (let i = 1; i < p.length; i++) ctx.lineTo(p[i][0], p[i][1]);
+    if (close) ctx.closePath();
+    return;
+  }
+  if (close) {
+    const n = p.length; const m = mid(p[n - 1], p[0]);
+    ctx.moveTo(m[0], m[1]);
+    for (let i = 0; i < n; i++) { const q = p[i], m2 = mid(q, p[(i + 1) % n]); ctx.quadraticCurveTo(q[0], q[1], m2[0], m2[1]); }
+    ctx.closePath();
+  } else {
+    ctx.moveTo(p[0][0], p[0][1]);
+    for (let i = 1; i < p.length - 1; i++) { const m = mid(p[i], p[i + 1]); ctx.quadraticCurveTo(p[i][0], p[i][1], m[0], m[1]); }
+    const l = p[p.length - 1]; ctx.lineTo(l[0], l[1]);
+  }
+}
+// A hand-inked shape. Fill and line get separate jitter, like paint laid under a drawn line.
+// Lines "boil" (redraw slightly differently) unless o.still is set.
+function ink(pts, o = {}) {
+  const id = o.id || 1, j = o.j ?? 1.1, seed = o.still ? id * 7919 : id * 7919 + BOIL * 104729;
+  const close = o.close ?? !!o.fill;
+  if (o.fill) { tracePath(jitterPts(pts, j * .8, R(seed + 17)), true, o.sharp); ctx.fillStyle = o.fill; ctx.fill(); }
+  if (o.stroke !== false) {
+    tracePath(jitterPts(pts, j, R(seed)), close, o.sharp);
+    ctx.strokeStyle = o.stroke || INK; ctx.lineWidth = o.w || 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.stroke();
+  }
+}
+function ellPts(c, rx, ry, n = 12) { const p = []; for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; p.push([c[0] + Math.cos(a) * rx, c[1] + Math.sin(a) * ry]); } return p; }
+function limb(pts, w, col, id) { ink(pts, { w: w + 3.2, stroke: INK, id }); ink(pts, { w, stroke: col, id }); }
+function dabs(x, y, w, h, col, n, seed, r0 = 6, r1 = 20, a = .25) {
+  const r = R(seed); ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = col;
+  for (let i = 0; i < n; i++) {
+    const cx = x + r() * w, cy = y + r() * h, rx = lerp(r0, r1, r()), ry = rx * lerp(.3, .7, r());
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, (r() - .5) * .6, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+}
+function ikE(S, T, a, b, bend) {
+  const dx = T[0] - S[0], dy = T[1] - S[1];
+  const dd = clamp(Math.hypot(dx, dy), Math.abs(a - b) + 1, a + b - .5);
+  const ang = Math.atan2(dy, dx);
+  const A = Math.acos(clamp((a * a + dd * dd - b * b) / (2 * a * dd), -1, 1));
+  const e = ang + bend * A;
+  return [S[0] + Math.cos(e) * a, S[1] + Math.sin(e) * a];
+}
+// A tapering strand (tail, cloak edge) from a centre line and widths.
+function strand(c, w0, w1) {
+  const L = [], Rr = [];
+  for (let i = 0; i < c.length; i++) {
+    const a = c[Math.max(0, i - 1)], b = c[Math.min(c.length - 1, i + 1)];
+    let nx = -(b[1] - a[1]), ny = b[0] - a[0]; const l = Math.hypot(nx, ny) || 1; nx /= l; ny /= l;
+    const w = lerp(w0, w1, i / (c.length - 1)) / 2;
+    L.push([c[i][0] + nx * w, c[i][1] + ny * w]); Rr.push([c[i][0] - nx * w, c[i][1] - ny * w]);
+  }
+  return L.concat(Rr.reverse());
+}
+
+// ---------- multiplane camera ----------
+// p is the plane's depth factor: 1 = character plane, <1 = farther, >1 = nearer the lens.
+let CAM = { x: W / 2, y: H / 2, z: 1 };
+function layer(p, fn) {
+  ctx.save();
+  const z = 1 + (CAM.z - 1) * p;
+  ctx.translate(W / 2, H / 2); ctx.scale(z, z);
+  ctx.translate(-(W / 2 + (CAM.x - W / 2) * p), -(H / 2 + (CAM.y - H / 2) * p));
+  fn();
+  ctx.restore();
+}
+
+// ---------- the light of the day ----------
+// One palette per time of day; scenes mix between them (0 = noon, 1 = sunset, 2 = night).
+const PAL = [
+  { skyT: '#a9c2cf', skyB: '#efe9d3', hills: '#a3aa9f', hills2: '#b8b9a2', plainF: '#cdbf86', plainN: '#a99b5c', grass: ['#8c8848', '#b3a663', '#d6cd96', '#7b7a40'], plume: '#f4efe0', sun: '#fffaf0', cloud: '#ffffff', shadow: 'rgba(60,50,20,.22)' },
+  { skyT: '#7b86a6', skyB: '#f0b57c', hills: '#8c7b80', hills2: '#a68a7c', plainF: '#c99c62', plainN: '#8f6a3e', grass: ['#6e5430', '#a07944', '#e0b97e', '#5e4528'], plume: '#ffe2b0', sun: '#fff1c4', cloud: '#f7c79a', shadow: 'rgba(60,30,20,.3)' },
+  { skyT: '#141a2c', skyB: '#4a3c4c', hills: '#231f2b', hills2: '#2c2630', plainF: '#3a2e2c', plainN: '#1f1a1a', grass: ['#2a2220', '#3e322c', '#5c4a3c', '#221c1a'], plume: '#8a7c70', sun: '#ffd8a0', cloud: '#5a4a58', shadow: 'rgba(0,0,0,.3)' },
+];
+function pal(m) {
+  const i = Math.min(1, Math.floor(m)), f = m - i, a = PAL[i], b = PAL[i + 1], o = {};
+  for (const k in a) o[k] = Array.isArray(a[k]) ? a[k].map((c, j) => mixC(c, b[k][j], f)) : k === 'shadow' ? (f < .5 ? a[k] : b[k]) : mixC(a[k], b[k], f);
+  return o;
+}
+function sway(u, x, amp) { return Math.sin(u * 1.9 + x * .013) * amp + Math.sin(u * .7 + x * .004) * amp * .6; }
+
+function sky(P, hz, sun) {
+  const g = ctx.createLinearGradient(0, -260, 0, hz + 10);
+  g.addColorStop(0, P.skyT); g.addColorStop(1, P.skyB);
+  ctx.fillStyle = g; ctx.fillRect(-900, -600, W + 1800, hz + 700);
+  if (sun) {
+    const s = ctx.createRadialGradient(sun[0], sun[1], 4, sun[0], sun[1], sun[3] || 380);
+    s.addColorStop(0, P.sun); s.addColorStop(.12, 'rgba(255,238,200,.55)'); s.addColorStop(1, 'rgba(255,230,190,0)');
+    ctx.fillStyle = s; ctx.fillRect(-900, -600, W + 1800, hz + 700);
+    if (sun[2]) { ctx.fillStyle = P.sun; ctx.beginPath(); ctx.arc(sun[0], sun[1], sun[2], 0, 7); ctx.fill(); }
+  }
+}
+function clouds(P, u, seed, n, y0, y1, a = .55) {
+  const r = R(seed); ctx.save(); ctx.fillStyle = P.cloud;
+  for (let i = 0; i < n; i++) {
+    const x = -600 + r() * (W + 1200) + u * (4 + r() * 4), y = lerp(y0, y1, r()), w = 80 + r() * 160;
+    ctx.globalAlpha = a * (.5 + r() * .5);
+    for (let k = 0; k < 5; k++) { ctx.beginPath(); ctx.ellipse(x + (k - 2) * w * .22, y + Math.sin(k * 2.1) * 4, w * .3, w * .07, 0, 0, 7); ctx.fill(); }
+  }
+  ctx.restore();
+}
+// Distant land: a low line of hills with burial mounds (kurgans) along it.
+function farLand(P, hz, seed, kurgans) {
+  const pts = [[-900, hz + 60]];
+  for (let x = -900; x <= W + 900; x += 30) pts.push([x, hz - 4 - Math.sin(x * .0035 + seed) * 9 - Math.sin(x * .011 + 2) * 3]);
+  pts.push([W + 900, hz + 60]);
+  ink(pts, { fill: P.hills, stroke: false, still: true, id: seed, j: .5 });
+  for (const [kx, kw, kh] of kurgans) {
+    const k = [];
+    for (let i = 0; i <= 16; i++) { const a = Math.PI + i / 16 * Math.PI; k.push([kx + Math.cos(a) * kw, hz + 4 + Math.sin(a) * kh]); }
+    ink(k, { fill: P.hills2, stroke: 'rgba(40,30,30,.25)', w: 1.2, still: true, id: seed + kx, j: .4 });
+  }
+}
+function plain(P, hz, seed) {
+  const g = ctx.createLinearGradient(0, hz, 0, H + 60);
+  g.addColorStop(0, P.plainF); g.addColorStop(1, P.plainN);
+  ctx.fillStyle = g; ctx.fillRect(-900, hz, W + 1800, H + 600 - hz);
+  // long horizontal strokes of dry grass, closer together near the horizon
+  const r = R(seed); ctx.save(); ctx.lineCap = 'round';
+  for (let i = 0; i < 260; i++) {
+    const f = r() ** 1.8, y = hz + 3 + f * (H + 80 - hz), x = -900 + r() * (W + 1800), len = 20 + f * 160;
+    ctx.strokeStyle = P.grass[Math.floor(r() * 4)]; ctx.globalAlpha = .35; ctx.lineWidth = .6 + f * 2.5;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + len, y + (r() - .5) * 2); ctx.stroke();
+  }
+  ctx.restore();
+}
+// Clumps of grass; taller and nearer toward the bottom of their band.
+function tufts(P, seed, n, x0, x1, y0, y1, h0, h1, u, wind) {
+  const r = R(seed); ctx.save(); ctx.lineCap = 'round';
+  for (let i = 0; i < n; i++) {
+    const x = lerp(x0, x1, r()), f = r(), y = lerp(y0, y1, f), hh = lerp(h0, h1, f) * (.6 + r() * .7);
+    ctx.strokeStyle = P.grass[Math.floor(r() * 4)]; ctx.lineWidth = .8 + f * 1.6;
+    ctx.beginPath();
+    for (let b = 0; b < 5; b++) {
+      const lean = (r() - .5) * .9, bend = sway(u, x + b * 9, wind) * (.6 + r() * .6);
+      const tx = x + (lean + bend) * hh, ty = y - hh * (.75 + r() * .3);
+      ctx.moveTo(x + (b - 2) * 1.6, y); ctx.quadraticCurveTo(x + lean * hh * .3, y - hh * .55, tx, ty);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+// Feather grass (Stipa), the silver plumes of the steppe, in the plane nearest the lens.
+function plumes(P, seed, n, x0, x1, y, h0, h1, u, wind) {
+  const r = R(seed); ctx.save(); ctx.lineCap = 'round';
+  for (let i = 0; i < n; i++) {
+    const x = lerp(x0, x1, r()), hh = lerp(h0, h1, r()), lean = (r() - .5) * .5, ph = r() * 6;
+    const bend = sway(u, x, wind) + Math.sin(u * 3.1 + ph) * wind * .25;
+    const tip = [x + (lean + bend) * hh, y - hh * (1 - Math.abs(bend) * .3)];
+    const c1 = [x + lean * hh * .2, y - hh * .5];
+    ctx.strokeStyle = P.grass[3]; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(x, y + 40); ctx.quadraticCurveTo(c1[0], c1[1], tip[0], tip[1]); ctx.stroke();
+    // the awn: a long feathery tail swept by the wind
+    const end = [tip[0] + (bend * 1.6 + lean) * hh * .9 + 40 * Math.sign(bend + lean + .01), tip[1] + hh * .25];
+    ctx.strokeStyle = P.plume; ctx.globalAlpha = .22; ctx.lineWidth = 7;
+    ctx.beginPath(); ctx.moveTo(tip[0], tip[1]); ctx.quadraticCurveTo(lerp(tip[0], end[0], .5), tip[1] - 12, end[0], end[1]); ctx.stroke();
+    ctx.globalAlpha = .6; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(tip[0], tip[1]); ctx.quadraticCurveTo(lerp(tip[0], end[0], .5), tip[1] - 12, end[0], end[1]); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+function groundShadow(P, x, y, rx, ry) { ctx.fillStyle = P.shadow; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, 7); ctx.fill(); }
+
+// ---------- the horses ----------
+// Stocky steppe horses: dun coats, dark legs, a dark stripe down the back and an upright mane.
+const DUN = { body: '#c39a62', dark: '#33261c', mane: '#2a1f17', muzzle: '#e6d2a8' };
+const GREY = { body: '#a99f8c', dark: '#3a322c', mane: '#4a4038', muzzle: '#ded5c4' };
+const BAY = { body: '#9c663c', dark: '#2a1c14', mane: '#22170f', muzzle: '#c9a27a' };
+// o: x, y (ground), s, dir, gait ('stand' | 'walk' | 'gallop'), dist (distance walked, for the feet),
+// neck (angle of the neck, -1 raised, +.6 grazing), head (bend at the poll), talk, look, blink, ear, tail.
+function horse(o) {
+  const s = o.s || 1, d = o.dir || 1, C = o.col || DUN, id = o.id || 300;
+  const gait = o.gait || 'stand';
+  const L = gait === 'gallop' ? 72 : 34, sf = gait === 'gallop' ? .4 : .62, lift = gait === 'gallop' ? 30 : 15;
+  const gp = (o.dist || 0) / s * sf / L;
+  let bob = o.bob || 0, pitch = o.pitch || 0;
+  if (gait === 'gallop') { bob += -Math.abs(Math.sin(gp * Math.PI * 2)) * 9; pitch += Math.sin(gp * Math.PI * 2) * .06; }
+  if (gait === 'walk') bob += -Math.abs(Math.sin(gp * Math.PI * 4)) * 1.5;
+  const cx = o.x, cy = o.y + (-92 + bob) * s;
+  const cp = Math.cos(d * pitch), sp = Math.sin(d * pitch);
+  const B = (lx, ly) => { const X = d * lx * s, Y = (ly + 92) * s; return [cx + X * cp - Y * sp, cy + X * sp + Y * cp]; };
+  const offs = gait === 'gallop' ? [.5, .1, .4, 0] : [.75, .5, .25, 0];
+  const legs = [
+    { hx: 40, hy: -84, fore: 1, near: 0, off: offs[0], st: o.stand ? o.stand[0] : 6 },
+    { hx: -48, hy: -90, fore: 0, near: 0, off: offs[1], st: o.stand ? o.stand[1] : -6 },
+    { hx: 46, hy: -84, fore: 1, near: 1, off: offs[2], st: o.stand ? o.stand[2] : -2 },
+    { hx: -42, hy: -90, fore: 0, near: 1, off: offs[3], st: o.stand ? o.stand[3] : 4 },
+  ];
+  function foot(lg) {
+    let fx = lg.hx, fy = 0;
+    if (gait === 'stand') fx += lg.st;
+    else {
+      const p = frac(gp + lg.off);
+      if (p < sf) fx += L / 2 - p / sf * L;
+      else { const f = (p - sf) / (1 - sf); fx += -L / 2 + ease(f) * L; fy = -Math.sin(Math.PI * f) * lift * (lg.fore ? 1 : .8); }
+    }
+    return [o.x + d * fx * s, o.y + fy * s];
+  }
+  function leg(lg) {
+    const Hp = B(lg.hx, lg.hy), F = foot(lg), a = 42 * s, b = 46 * s;
+    const j1 = ikE(Hp, F, a, b, 1), j2 = ikE(Hp, F, a, b, -1);
+    const J = lg.fore ? (d * j1[0] > d * j2[0] ? j1 : j2) : (d * j1[0] < d * j2[0] ? j1 : j2);
+    const body = lg.near ? C.body : shade(C.body, -.22), dk = lg.near ? C.dark : shade(C.dark, -.2);
+    limb([Hp, J], (lg.fore ? 15 : 20) * s, body, id + lg.hx + 7);
+    limb([J, F], 8 * s, dk, id + lg.hx + 9);
+    ink([[F[0] - d * 5 * s, F[1]], [F[0] + d * 8 * s, F[1]], [F[0] + d * 6 * s, F[1] - 9 * s], [F[0] - d * 4 * s, F[1] - 9 * s]], { fill: '#1b1410', sharp: true, w: 1.4, id: id + lg.hx + 11 });
+  }
+  leg(legs[0]); leg(legs[1]);
+  // tail
+  const tw = o.tail ?? 0, tr = B(-80, -102);
+  const tc = gait === 'gallop'
+    ? [tr, B(-100, -104 + Math.sin(gp * 6.3) * 4), B(-124, -98 + Math.sin(gp * 6.3 + 1) * 6), B(-146, -90)]
+    : [tr, B(-90 - tw * 12, -84), B(-94 - tw * 22, -58), B(-92 - tw * 26, -34)];
+  ink(strand(tc, 9 * s, 14 * s), { fill: C.mane, w: 1.6, id: id + 20 });
+  // barrel
+  const body = [B(-82, -96), B(-74, -116), B(-48, -124), B(-12, -114), B(22, -120), B(40, -128), B(62, -106), B(68, -86), B(52, -70), B(10, -63), B(-30, -66), B(-64, -74), B(-84, -86)];
+  ink(body, { fill: C.body, w: 2.2, id: id + 21 });
+  ink([B(-60, -76), B(-20, -68), B(20, -68), B(46, -74)], { w: 3 * s, stroke: 'rgba(255,240,210,.25)', id: id + 22 });
+  ink([B(-70, -118), B(-30, -118), B(10, -116), B(30, -121)], { w: 2.5 * s, stroke: C.mane, id: id + 23 });
+  leg(legs[2]); leg(legs[3]);
+  // the near thigh and shoulder, so the legs grow out of the body
+  ink([B(-24, -96), B(-34, -114), B(-62, -116), B(-80, -98), B(-70, -74), B(-56, -60), B(-40, -62), B(-26, -78)], { fill: C.body, stroke: false, id: id + 34 });
+  ink([B(-80, -98), B(-72, -74), B(-56, -60), B(-42, -62)], { w: 2, id: id + 35 });
+  ink([B(30, -110), B(58, -108), B(60, -78), B(50, -64), B(36, -66), B(28, -86)], { fill: C.body, stroke: false, id: id + 36 });
+  ink([B(36, -66), B(50, -64), B(58, -76)], { w: 2, id: id + 37 });
+  // neck and head
+  const na = o.neck ?? -.95, ha = na + (o.head ?? 1.55);
+  const P = [46 + Math.cos(na) * 56, -104 + Math.sin(na) * 56];
+  const ch = Math.cos(ha), shh = Math.sin(ha);
+  const hl = (hx, hy) => [P[0] + (hx * ch - hy * shh) * 1.12, P[1] + (hx * shh + hy * ch) * 1.12];
+  const Hd = (hx, hy) => B(...hl(hx, hy));
+  const wi = [36, -128], chest = [68, -88], pb = hl(-6, -6), th = hl(8, 12);
+  const neck = [B(...wi), B((wi[0] + pb[0]) / 2 - 4, (wi[1] + pb[1]) / 2 - 7), B(...pb), B(...th), B((chest[0] + th[0]) / 2 + 7, (chest[1] + th[1]) / 2 + 3), B(...chest)];
+  ink(neck, { fill: C.body, w: 2.2, id: id + 24 });
+  // the upright mane, a brush along the top of the neck
+  const mane = [];
+  const nl = Math.hypot(pb[0] - wi[0], pb[1] - wi[1]), nx = (pb[1] - wi[1]) / nl, ny = -(pb[0] - wi[0]) / nl;
+  const sg = ny < 0 ? 1 : -1;
+  for (let k = 0; k <= 9; k++) {
+    const f = k / 9, bx = lerp(wi[0] - 4, pb[0], f), by = lerp(wi[1] + 2, pb[1], f), hgt = (k % 2 ? 11 : 6) * (1 - f * .3);
+    mane.push(B(bx + nx * sg * hgt, by + ny * sg * hgt));
+  }
+  for (let k = 9; k >= 0; k--) { const f = k / 9; mane.push(B(lerp(wi[0] - 4, pb[0], f) - nx * sg * 2, lerp(wi[1] + 2, pb[1], f) - ny * sg * 2)); }
+  ink(mane, { fill: C.mane, w: 1.4, sharp: true, id: id + 25 });
+  // ears
+  const ea = o.ear ?? 0;
+  ink([Hd(-2, -8), Hd(-8 - ea * 8, -24 + ea * 6), Hd(4, -12)], { fill: shade(C.body, -.1), w: 1.6, id: id + 26 });
+  const talk = o.talk ? (Math.floor((o.t || 0) * 7) % 2) : 0;
+  const head = [Hd(-6, -8), Hd(10, -12), Hd(30, -9), Hd(46, -6), Hd(54, 0), Hd(55, 8), Hd(48, 12), Hd(34, 12 + talk * 3), Hd(14, 14), Hd(2, 12), Hd(-7, 4)];
+  ink(head, { fill: C.body, w: 2.2, id: id + 27 });
+  ink([Hd(38, -6), Hd(46, -6), Hd(54, 0), Hd(55, 8), Hd(48, 12), Hd(38, 11)], { fill: C.muzzle, w: 1.4, id: id + 28 });
+  ink([Hd(2, -8), Hd(-6, -24 + ea * 6), Hd(8, -11)], { fill: C.body, w: 1.6, id: id + 29 });
+  ink([Hd(0, -10), Hd(8, -18), Hd(12, -9)], { fill: C.mane, w: 1.2, id: id + 30 });
+  if (talk) ink([Hd(40, 9), Hd(52, 8), Hd(46, 13)], { fill: '#3a1c18', w: 1.2, id: id + 31 });
+  else ink([Hd(42, 9), Hd(53, 8)], { w: 1.4 * s, id: id + 31 });
+  const ey = Hd(14, -3), lk = o.look || [0, 0];
+  if (o.blink) ink([Hd(9, -3), Hd(19, -2)], { w: 1.8 * s, id: id + 32 });
+  else {
+    ctx.fillStyle = '#f3ead8'; ctx.beginPath(); ctx.ellipse(ey[0], ey[1], 5 * s, 4.2 * s, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#1a120c'; ctx.beginPath(); ctx.arc(ey[0] + (d * 1.2 + lk[0] * 2) * s, ey[1] + lk[1] * 1.6 * s, 3 * s, 0, 7); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(ey[0] + (d * 1.2 + lk[0] * 2 + 1) * s, ey[1] - 1.2 * s, 1 * s, 0, 7); ctx.fill();
+    ink([Hd(8, -8 - (o.brow || 0) * 2), Hd(20, -7 + (o.brow || 0) * 2)], { w: 1.6 * s, id: id + 33 });
+  }
+  ctx.fillStyle = '#2a1a14'; const ns = Hd(50, 1); ctx.beginPath(); ctx.ellipse(ns[0], ns[1], 1.8 * s, 2.6 * s, ha, 0, 7); ctx.fill();
+  return { back: B(4, -118), chest: B(60, -88), rump: B(-76, -104), muzzle: Hd(54, 4), B };
+}
+
+// ---------- the sheep ----------
+// Shorn: pink skin under a stubble of wool, a black face and legs, and one tuft left on top.
+const SH = { body: '#ecd0c2', face: '#2c2420', leg: '#2c2420', wool: '#f2eadb', inner: '#c98f86' };
+// o: x, y, s, dir, gait ('stand' | 'walk' | 'run'), dist or ph, head (tilt, + is down), look [x, y],
+// blink, talk, worry, droop, crouch, stretch, jx (shiver).
+function sheep(o) {
+  const s = o.s || 1, d = o.dir || 1, id = o.id || 50;
+  const gait = o.gait || 'stand';
+  const L = gait === 'run' ? 44 : 18, sf = gait === 'run' ? .42 : .62, lift = gait === 'run' ? 14 : 7;
+  const gp = o.ph ?? (o.dist || 0) / s * sf / L;
+  let bob = 0, pitch = o.pitch || 0;
+  if (gait === 'run') { bob = -Math.abs(Math.sin(gp * Math.PI * 2)) * 10; pitch += Math.sin(gp * Math.PI * 2) * .1; }
+  if (gait === 'walk') bob = -Math.abs(Math.sin(gp * Math.PI * 4)) * 1.5;
+  bob += (o.crouch || 0) * 9 - (o.stretch || 0) * 6;
+  pitch += (o.crouch || 0) * .12 - (o.stretch || 0) * .1;
+  const cx = o.x + (o.jx || 0), cy = o.y + (-44 + bob) * s;
+  const cp = Math.cos(d * pitch), sp = Math.sin(d * pitch);
+  const B = (lx, ly) => { const X = d * lx * s * (1 + (o.stretch || 0) * .12), Y = (ly + 44) * s; return [cx + X * cp - Y * sp, cy + X * sp + Y * cp]; };
+  const offs = gait === 'run' ? [.5, .02, .56, 0] : [.75, .5, .25, 0];
+  const legs = [
+    { hx: 18, fore: 1, near: 0, off: offs[0], st: 3 }, { hx: -28, fore: 0, near: 0, off: offs[1], st: -3 },
+    { hx: 24, fore: 1, near: 1, off: offs[2], st: -1 }, { hx: -22, fore: 0, near: 1, off: offs[3], st: 2 },
+  ];
+  function leg(lg) {
+    const Hp = B(lg.hx, -34);
+    let fx = lg.hx, fy = 0;
+    if (gait === 'stand') fx += lg.st + (o.spread || 0) * (lg.fore ? 6 : -6);
+    else {
+      const p = frac(gp + lg.off);
+      if (p < sf) fx += L / 2 - p / sf * L;
+      else { const f = (p - sf) / (1 - sf); fx += -L / 2 + ease(f) * L; fy = -Math.sin(Math.PI * f) * lift; }
+    }
+    if (o.stretch) fx += (lg.fore ? 14 : -14) * o.stretch, fy -= 6 * o.stretch;
+    const F = [o.x + (o.jx || 0) + d * fx * s, o.y + fy * s];
+    const J1 = ikE(Hp, F, 17 * s, 19 * s, 1), J2 = ikE(Hp, F, 17 * s, 19 * s, -1);
+    const J = lg.fore ? (d * J1[0] > d * J2[0] ? J1 : J2) : (d * J1[0] < d * J2[0] ? J1 : J2);
+    const c = lg.near ? SH.leg : '#4a3e38';
+    limb([Hp, J, F], 5.5 * s, c, id + lg.hx + 40);
+    ink([[F[0] - d * 3 * s, F[1]], [F[0] + d * 5 * s, F[1]], [F[0] + d * 3 * s, F[1] - 5 * s]], { fill: '#141010', sharp: true, w: 1, id: id + lg.hx + 41 });
+  }
+  leg(legs[0]); leg(legs[1]);
+  // tail nub and body
+  ink([B(-40, -50), B(-49, -46), B(-47, -36), B(-39, -40)], { fill: SH.body, w: 1.6, id: id + 1 });
+  const bp = [];
+  for (let i = 0; i < 16; i++) {
+    const a = i / 16 * Math.PI * 2, sag = Math.sin(a) > 0 ? 4 * Math.sin(a) : -3 * Math.sin(a) * 0;
+    bp.push(B(Math.cos(a) * 40, -46 + Math.sin(a) * 21 + sag));
+  }
+  ink(bp, { fill: SH.body, w: 2.2, id: id + 2 });
+  // stubble, ribs and a wrinkle or two
+  const r = R(id * 13);
+  ctx.save(); ctx.fillStyle = 'rgba(170,120,105,.55)';
+  for (let i = 0; i < 46; i++) {
+    const a = r() * Math.PI * 2, rr = Math.sqrt(r()) * .85, p = B(Math.cos(a) * 38 * rr, -46 + Math.sin(a) * 19 * rr);
+    ctx.beginPath(); ctx.arc(p[0], p[1], .9 * s, 0, 7); ctx.fill();
+  }
+  ctx.restore();
+  for (let k = 0; k < 3; k++) ink([B(-6 + k * 9, -36), B(-2 + k * 9, -46), B(-6 + k * 9, -55)], { w: 1.1 * s, stroke: 'rgba(150,95,85,.6)', id: id + 3 + k });
+  ink([B(26, -60), B(30, -48), B(28, -36)], { w: 1.2 * s, stroke: 'rgba(150,95,85,.6)', id: id + 6 });
+  leg(legs[2]); leg(legs[3]);
+  // neck and head
+  const ha = .55 + (o.head || 0), hp = [34, -60];
+  const c = Math.cos(ha), sn = Math.sin(ha);
+  const Hd = (hx, hy) => B(hp[0] + hx * c - hy * sn, hp[1] + hx * sn + hy * c);
+  ink([B(20, -64), Hd(-3, -10), Hd(-1, 9), B(36, -40)], { fill: SH.body, w: 2, id: id + 7 });
+  const dr = o.droop || 0;
+  ink([Hd(2, -7), Hd(-15, -9 + dr * 16), Hd(-18, -3 + dr * 18), Hd(0, -1)], { fill: SH.face, w: 1.6, id: id + 8 });
+  ink([Hd(0, -5), Hd(-13, -6 + dr * 15), Hd(-14, -4 + dr * 16)], { w: 2 * s, stroke: SH.inner, id: id + 9 });
+  const tk = o.talk ? Math.floor((o.t || 0) * 7) % 2 : 0;
+  ink([Hd(-5, -11), Hd(10, -13), Hd(23, -9), Hd(32, -2), Hd(33, 5), Hd(27, 9 + tk * 2), Hd(14, 10), Hd(2, 9), Hd(-6, 3)], { fill: SH.face, w: 2, id: id + 10 });
+  // the one tuft of wool the shearer left
+  ink([Hd(-4, -11), Hd(-2, -19), Hd(5, -22), Hd(12, -18), Hd(13, -12), Hd(4, -10)], { fill: SH.wool, w: 1.4, id: id + 11 });
+  if (tk) ink([Hd(25, 6), Hd(31, 6), Hd(28, 10)], { fill: '#6a2a28', w: 1, id: id + 12 });
+  const e = Hd(13, -3), lk = o.look || [0, 0], wr = o.worry || 0;
+  if (o.blink) ink([Hd(8, -3), Hd(18, -2)], { w: 1.6 * s, stroke: '#a8968a', id: id + 13 });
+  else {
+    const big = 1 + (o.wide || 0) * .35;
+    ctx.fillStyle = '#f7f1e6'; ctx.beginPath(); ctx.ellipse(e[0], e[1], 5.6 * s * big, 5 * s * big, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#16100c'; ctx.beginPath(); ctx.arc(e[0] + (d * .8 + lk[0] * 2.4) * s, e[1] + lk[1] * 2.2 * s, 2.6 * s, 0, 7); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(e[0] + (d * .8 + lk[0] * 2.4 + .9) * s, e[1] + (lk[1] * 2.2 - 1) * s, .9 * s, 0, 7); ctx.fill();
+  }
+  ink([Hd(7, -10 + wr * 2), Hd(19, -11 - wr * 4)], { w: 1.8 * s, stroke: '#a8968a', id: id + 14 });
+  ctx.fillStyle = '#0c0806'; const ns = Hd(30, 0); ctx.beginPath(); ctx.arc(ns[0], ns[1], 1.2 * s, 0, 7); ctx.fill();
+  return { head: Hd(14, -4), mouth: Hd(32, 6), B };
+}
+
+// ---------- people and things ----------
+const SKIN = '#d6a27c', TUNIC = '#7a4630', CLOAK = '#efe5cc', BEARD = '#43301f';
+// The rider: bareback, a cream wool cloak streaming behind him, a stick raised to drive the horse on.
+function rider(seat, s, d, u, id) {
+  const P = (lx, ly) => [seat[0] + d * lx * s, seat[1] + ly * s];
+  const fl = Math.sin(u * 22) * 5, fl2 = Math.sin(u * 22 + 1.4) * 6;
+  ink([P(-8, -50), P(-30, -54 + fl), P(-62, -44 + fl2), P(-80, -30 + fl), P(-56, -22 + fl2), P(-30, -18), P(-12, -4)], { fill: shade(CLOAK, -.1), w: 1.8, id: id });
+  limb([P(-2, -2), P(16, 20), P(10, 52)], 9 * s, '#5a3c28', id + 1);
+  ink([P(-10, 0), P(-12, -46), P(4, -54), P(14, -40), P(12, 0)], { fill: TUNIC, w: 2, id: id + 2 });
+  ink([P(-14, -48), P(4, -56), P(10, -46), P(-2, -30), P(-18, -20), P(-34, -30 + fl * .5)], { fill: CLOAK, w: 1.8, id: id + 3 });
+  ink(ellPts(P(8, -64), 9 * s, 10 * s, 10), { fill: SKIN, w: 1.8, id: id + 4 });
+  ink([P(-1, -68), P(4, -76), P(14, -75), P(17, -68), P(8, -70)], { fill: BEARD, w: 1.4, id: id + 5 });
+  ink([P(9, -60), P(18, -60), P(16, -50), P(8, -52)], { fill: BEARD, w: 1.4, id: id + 6 });
+  const hd = P(34, -44 + Math.sin(u * 11) * 3);
+  limb([P(6, -48), P(20, -40), hd], 6 * s, TUNIC, id + 7);
+  ink([hd, [hd[0] + d * 20 * s, hd[1] - 36 * s]], { w: 2.4 * s, stroke: '#4a3020', id: id + 8 });
+}
+// The man at the fire, wrapped in his cloak; pull tightens it.
+function manAtFire(x, y, s, d, u, pull, id) {
+  const P = (lx, ly) => [x + d * lx * s, y + ly * s];
+  ink([P(-26, 0), P(-30, -40), P(-16, -74), P(6, -78), P(22, -60), P(28 - pull * 6, -28), P(26 - pull * 4, 0)], { fill: CLOAK, w: 2, id });
+  ink([P(-26, -6), P(26 - pull * 4, -6)], { w: 3 * s, stroke: '#9a5a36', id: id + 1 });
+  ink([P(6, -70), P(20 - pull * 4, -44), P(24 - pull * 6, -20)], { w: 1.4 * s, stroke: 'rgba(120,100,70,.6)', id: id + 2 });
+  ink(ellPts(P(4, -90), 11 * s, 12 * s, 10), { fill: SKIN, w: 1.8, id: id + 3 });
+  ink([P(-8, -94), P(-4, -103), P(10, -103), P(15, -95), P(4, -97)], { fill: BEARD, w: 1.4, id: id + 4 });
+  ink([P(6, -86), P(16, -86), P(13, -76), P(4, -78)], { fill: BEARD, w: 1.4, id: id + 5 });
+  ink([P(18, -40), P(30, -38)], { w: 6 * s, stroke: SKIN, id: id + 6 });
+}
+function fire(x, y, s, u, id) {
+  ctx.save();
+  const g = ctx.createRadialGradient(x, y - 10 * s, 2, x, y - 10 * s, 120 * s);
+  g.addColorStop(0, 'rgba(255,190,90,.55)'); g.addColorStop(1, 'rgba(255,150,60,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y - 10 * s, 120 * s, 0, 7); ctx.fill(); ctx.restore();
+  for (let k = 0; k < 4; k++) ink([[x + (k - 1.5) * 9 * s, y + 2 * s], [x + (k - 1.5) * 4 * s, y - 6 * s]], { w: 4 * s, stroke: '#3a2618', id: id + k });
+  const q = twos(u);
+  for (let k = 0; k < 3; k++) {
+    const h = (26 + Math.sin(q * 9 + k * 2) * 7) * s * (k === 1 ? 1.3 : .9), bx = x + (k - 1) * 8 * s;
+    ink([[bx - 7 * s, y], [bx - 5 * s, y - h * .5], [bx + Math.sin(q * 11 + k) * 4 * s, y - h], [bx + 6 * s, y - h * .45], [bx + 7 * s, y]], { fill: k === 1 ? '#ffd47c' : '#f08a3a', stroke: false, id: id + 10 + k });
+  }
+}
+function smoke(x, y, s, u, wind, seed) {
+  ctx.save();
+  for (let i = 0; i < 9; i++) {
+    const r = R(seed + i), f = frac(u * .12 + i / 9);
+    const px = x + (f * 70 * wind + Math.sin(f * 6 + i) * 8) * s, py = y - f * 180 * s, rr = (6 + f * 26) * s;
+    ctx.globalAlpha = .28 * (1 - f) * (f < .1 ? f * 10 : 1); ctx.fillStyle = '#d8cfc4';
+    ctx.beginPath(); ctx.ellipse(px, py, rr, rr * .7, 0, 0, 7); ctx.fill(); r();
+  }
+  ctx.restore();
+}
+// A wagon of the steppe: solid wooden wheels, a box, and an arched cover of felt over wicker.
+function wagon(x, y, s, d, roll, id, pole) {
+  const P = (lx, ly) => [x + d * lx * s, y + ly * s];
+  const wood = '#7d5a3a', felt = '#cdb68c';
+  ink([P(-6, -70), P(-178, -70), P(-178, -96), P(-6, -96)], { fill: shade(wood, -.15), sharp: true, w: 2, id });
+  const arch = [];
+  for (let i = 0; i <= 12; i++) { const a = Math.PI + i / 12 * Math.PI; arch.push(P(-92 + Math.cos(a) * 84, -96 + Math.sin(a) * 66)); }
+  ink(arch, { fill: felt, w: 2, id: id + 1 });
+  for (let k = 1; k < 6; k++) { const xx = -92 + (k - 3) * 28; ink([P(xx, -98), P(xx * .98 - 92 * .02, -96 - Math.sqrt(Math.max(0, 1 - ((xx + 92) / 84) ** 2)) * 64)], { w: 1.4, stroke: 'rgba(110,80,50,.55)', id: id + 2 + k }); }
+  ink([P(-6, -84), P(-178, -84)], { w: 2.5 * s, stroke: '#5a3e26', id: id + 9 });
+  if (pole) ink([P(-4, -64), pole], { w: 5 * s, stroke: '#5e4028', id: id + 10 });
+  for (const wx of [-40, -142]) {
+    const c = P(wx, -36);
+    ink(ellPts(c, 34 * s, 34 * s, 14), { fill: wood, w: 2.2, id: id + 11 + wx });
+    ctx.save(); ctx.translate(c[0], c[1]); ctx.rotate(-d * roll);
+    ctx.strokeStyle = 'rgba(50,30,15,.6)'; ctx.lineWidth = 1.6 * s;
+    for (const k of [-11, 11]) { ctx.beginPath(); ctx.moveTo(k * s, -31 * s); ctx.lineTo(k * s, 31 * s); ctx.stroke(); }
+    ctx.fillStyle = '#5a3e26'; ctx.beginPath(); ctx.ellipse(0, 0, 13 * s, 8 * s, Math.PI / 2, 0, 7); ctx.fill();
+    ctx.restore();
+  }
+}
+// What the pack horse carries: rolled felt, sacks, and a pot.
+function pack(h, s, d, u, id) {
+  const P = (lx, ly) => h.B(lx, ly);
+  ink([P(-46, -112), P(-46, -140), P(30, -140), P(30, -112)], { fill: '#b59c72', w: 2, id });
+  for (const k of [-30, -6, 18]) ink([P(k, -112), P(k, -141)], { w: 2 * s, stroke: '#5a3e26', id: id + k + 40 });
+  ink([P(-40, -116), P(-48, -74), P(-30, -66), P(-6, -70), P(-4, -112)], { fill: '#8b6a48', w: 2, id: id + 1 });
+  ink([P(0, -114), P(4, -76), P(22, -68), P(40, -78), P(34, -114)], { fill: '#7a5c3e', w: 2, id: id + 2 });
+  ink([P(-58, -138), P(-58, -154), P(40, -154), P(40, -138)], { fill: '#d6c4a0', w: 2, id: id + 3 });
+  ink(ellPts(P(-60, -146), 6 * s, 9 * s, 8), { fill: '#e8dabb', w: 1.4, id: id + 4 });
+  const sw = Math.sin(u * 4) * 3;
+  ink(ellPts(P(30 + sw, -62), 12 * s, 11 * s, 10), { fill: '#a65a3a', w: 1.8, id: id + 5 });
+  ink([P(24 + sw, -72), P(36 + sw, -72)], { w: 3 * s, stroke: '#7a3a22', id: id + 6 });
+}
+function dust(x, y, s, f, seed, P) {
+  const r = R(seed); ctx.save();
+  for (let i = 0; i < 4; i++) {
+    const rr = (8 + f * 40 + r() * 10) * s;
+    ctx.globalAlpha = .32 * (1 - f); ctx.fillStyle = '#d9c99a';
+    ctx.beginPath(); ctx.ellipse(x + (r() - .5) * 30 * s, y - f * 30 * s - r() * 10 * s, rr, rr * .6, 0, 0, 7); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---------- shots ----------
+function shotTitle(u) {
+  const P = pal(0);
+  CAM = { x: K(u, [[0, 600], [8, 680]]), y: 360, z: 1.02 };
+  layer(.05, () => { sky(P, 470, [980, 120, 0, 520]); clouds(P, u, 11, 7, 60, 260); });
+  layer(.2, () => farLand(P, 470, 3, [[300, 46, 16], [900, 30, 10]]));
+  layer(.5, () => { plain(P, 470, 5); tufts(P, 6, 120, -300, W + 300, 480, 600, 6, 16, u, .2); });
+  layer(1.5, () => { tufts(P, 7, 60, -300, W + 300, 640, 760, 40, 70, u, .35); plumes(P, 8, 26, -200, W + 200, 730, 120, 220, u, .5); });
+  const a = ease(seg(u, .6, 2.2));
+  ctx.save(); ctx.textAlign = 'center'; ctx.globalAlpha = a;
+  ctx.fillStyle = '#2e2a22'; ctx.font = '62px ' + SERIF; ctx.fillText('The Sheep and the Horses', W / 2, 228);
+  ctx.globalAlpha = ease(seg(u, 1.8, 3.2)); ctx.font = 'italic 30px ' + SERIF; ctx.fillStyle = '#5a4a36';
+  ctx.fillText('Avis akvāsas ka', W / 2, 284);
+  ctx.globalAlpha = ease(seg(u, 2.8, 4.2)); ctx.font = 'italic 21px ' + SERIF;
+  ctx.fillText('after the fable August Schleicher wrote in reconstructed Proto-Indo-European, 1868', W / 2, 330);
+  ctx.restore();
+}
+
+function hillScene(P, u, wind) {
+  layer(.05, () => { sky(P, 392, [1120, 90, 0, 520]); clouds(P, u, 21, 8, 40, 250); });
+  layer(.2, () => farLand(P, 392, 23, [[260, 54, 18], [1040, 40, 14], [1500, 30, 9]]));
+  layer(.5, () => {
+    plain(P, 392, 25); tufts(P, 26, 160, -500, W + 700, 400, 520, 4, 12, u, wind * .4);
+  });
+}
+// The sheep on its hill, alone, in the wind.
+function shotHill(u) {
+  const P = pal(.05), q = twos(u);
+  CAM = { x: K(u, [[0, 260], [4.2, 640], [11, 760]]), y: K(u, [[0, 360], [4.2, 360], [11, 420]]), z: K(u, [[0, 1], [4.2, 1], [11, 1.4]]) };
+  const gust = K(u, [[0, .25], [4, .25], [4.6, .9], [6.4, .9], [7.4, .35]]);
+  hillScene(P, q, gust);
+  // a little dust far off on the plain: the horses are coming
+  layer(.5, () => { if (u > 7) dust(1290, 412, .4, frac((u - 7) * .4), 31, P); });
+  layer(1, () => {
+    const hill = [[400, 760], [560, 520], [700, 478], [880, 470], [1040, 490], [1240, 560], [1500, 760]];
+    ink(hill.concat([[1500, 900], [400, 900]]), { fill: mixC(P.plainF, P.plainN, .45), stroke: 'rgba(70,60,30,.35)', still: true, id: 401, w: 1.5 });
+    tufts(P, 402, 70, 520, 1300, 480, 640, 10, 28, q, gust);
+    groundShadow(P, 805, 478, 52, 7);
+    const lift = K(u, [[0, 1.05], [4.5, 1.05], [5, -.12], [5.3, 0], [7.4, 0], [7.8, -.18]], easeOut);
+    const nib = u < 4.5 ? Math.max(0, Math.sin(q * 9)) * .08 : 0;
+    const shiver = u > 5.1 && u < 6.7 ? Math.sin(u * 70) * 1.8 : 0;
+    sheep({ x: 800, y: 478, s: 1.05, dir: 1, head: lift + nib, jx: shiver, worry: K(u, [[0, 0], [5, 0], [5.4, 1]]),
+      droop: K(u, [[0, .2], [5, .2], [5.4, .9], [7.3, .9], [7.6, -.2], [8.1, .3]]), look: K(u, [[0, [0, .6]], [5, [0, 0]], [7.5, [0, 0]], [7.9, [1, .3]]]),
+      blink: (u > 6.3 && u < 6.45) || (u > 9.5 && u < 9.62), spread: u > 5 && u < 6.8 ? .6 : 0, crouch: u > 5.1 && u < 6.7 ? .25 : 0, t: u });
+  });
+  layer(1.5, () => { plumes(P, 403, 26, -300, W + 500, 745, 140, 240, q, gust); });
+}
+
+// The procession on the track below the sheep's hill.
+const H1X = u => 1300 - 50 * u, H2X = u => 1680 - 50 * u, RX = u => 1820 - 330 * (u - 12.2);
+function shotProcession(u) {
+  const P = pal(.1), q = twos(u), wind = .3;
+  CAM = { x: K(u, [[0, 660], [21, 610]]), y: 360, z: 1 };
+  layer(.05, () => { sky(P, 360, [1120, 60, 0, 520]); clouds(P, u, 41, 8, 20, 220); });
+  layer(.2, () => farLand(P, 360, 43, [[180, 50, 16], [760, 34, 12], [1300, 44, 14]]));
+  layer(.5, () => { plain(P, 360, 45); tufts(P, 46, 140, -500, W + 700, 370, 470, 4, 12, q, wind * .4); });
+  layer(1, () => {
+    // the track: two ruts worn into the steppe
+    ctx.fillStyle = 'rgba(150,120,70,.35)'; ctx.fillRect(-400, 488, W + 900, 22);
+    ink([[-400, 492], [W + 500, 490]], { w: 2, stroke: 'rgba(110,85,50,.5)', still: true, id: 450 });
+    ink([[-400, 506], [W + 500, 504]], { w: 2, stroke: 'rgba(110,85,50,.5)', still: true, id: 451 });
+    tufts(P, 452, 90, -400, W + 500, 470, 560, 6, 18, q, wind);
+    // the wagon horse, head low, leaning into the collar
+    const s1 = .8, x1 = H1X(q), wx = x1 + 104 * s1;
+    groundShadow(P, x1 + 100, 506, 220, 9);
+    const h1 = horse({ x: x1, y: 503, s: s1, dir: -1, gait: 'walk', dist: 1300 - x1, neck: -.35 + Math.sin(q * 4) * .05, col: GREY, id: 310, pitch: .03, ear: .4, t: q });
+    wagon(wx, 503, s1, -1, (1300 - x1) / (34 * s1), 360, h1.B(42, -88));
+    // the pack horse
+    const x2 = H2X(q);
+    if (x2 < W + 300) { groundShadow(P, x2, 504, 70, 6); const h2 = horse({ x: x2, y: 501, s: .78, dir: -1, gait: 'walk', dist: 1680 - x2, neck: -.6, col: BAY, id: 330, t: q }); pack(h2, .78, -1, q, 380); }
+    // the rider, galloping past
+    if (u > 12.2 && u < 18.5) {
+      const xr = RX(q), s3 = .95;
+      for (let i = 0; i < 18; i++) { const tt = 12.2 + i * .25; if (tt < u) dust(RX(tt) + 40, 552, 1, clamp((u - tt) / 2.6), 470 + i, P); }
+      groundShadow(P, xr, 552, 70, 6);
+      const h3 = horse({ x: xr, y: 550, s: s3, dir: -1, gait: 'gallop', dist: 1820 - xr, neck: -.75, head: 1.4, col: DUN, id: 340, ear: .7, t: q });
+      rider(h3.back, s3, -1, q, 390);
+    }
+    // the sheep's mound in front, and the sheep
+    const mound = [[-200, 610], [-40, 592], [120, 586], [280, 592], [420, 620], [560, 700], [640, 800]];
+    ink(mound.concat([[640, 900], [-200, 900]]), { fill: mixC(P.plainF, P.plainN, .7), stroke: 'rgba(70,60,30,.35)', still: true, id: 453, w: 1.5 });
+    tufts(P, 454, 50, -200, 600, 600, 720, 14, 34, q, wind);
+    const cough = u > 17.3 && u < 18.4, ln = clamp((u - 15.4) / .6);
+    const look = u < 12 ? [-.2, .7] : u < 14.6 ? [1, .4] : u < 16.2 ? [lerp(1, -1, ease(seg(u, 14.6, 16.2))), .6] : [-1, .3];
+    sheep({ x: 180, y: 594, s: 1.55, dir: 1, head: K(u, [[0, .1], [13.8, .1], [14.4, -.15], [16, .3], [17.3, .3], [17.5, -.25], [17.7, .35], [17.9, -.2], [18.4, .25]]),
+      look: cough ? [0, 0] : look, blink: cough || (u > 4 && u < 4.12) || (u > 10.2 && u < 10.32), worry: K(u, [[0, .2], [7, .2], [8, .7]]), droop: K(u, [[0, .3], [13.6, .3], [14, -.1], [16.5, .3]]),
+      talk: false, t: q, jx: cough ? Math.sin(u * 40) * 2 : 0 });
+    // the rider's dust reaches the sheep
+    if (u > 15.6) for (let i = 0; i < 8; i++) dust(120 + i * 40 - (u - 15.6) * 30, 560 - i * 3, 1.3, clamp((u - 15.6 - i * .1) / 3.4), 490 + i, P);
+    void ln;
+  });
+  layer(1.45, () => plumes(P, 455, 14, -300, 600, 760, 150, 230, q, .45));
+}
+
+// The camp at sunset: the sheep, the three horses, the wagon, and the man at his fire.
+const SUNX = 440;
+function campScene(u, m, sunY, poses) {
+  const P = pal(m), q = twos(u), hz = 432, wind = .25;
+  layer(.04, () => { sky(P, hz, [SUNX, sunY, 26, 560]); clouds(P, u, 61, 7, 120, 330, .5); });
+  layer(.18, () => farLand(P, hz, 63, [[200, 46, 14], [880, 36, 12], [1400, 52, 16]]));
+  layer(.4, () => { plain(P, hz, 65); tufts(P, 66, 140, -700, W + 900, hz + 6, 500, 4, 12, q, wind * .4); });
+  layer(.6, () => {
+    wagon(1180, 478, .45, -1, 0, 610, [1180 - 30 * .45 - 70, 478]);
+    groundShadow(P, 690, 482, 40, 5);
+    fire(650, 478, .55, u, 620);
+    smoke(650, 456, .55, u, 1, 630);
+    manAtFire(690, 480, .45, -1, q, poses.pull || 0, 640);
+  });
+  layer(1, () => {
+    tufts(P, 67, 120, -400, W + 500, 500, 640, 10, 26, q, wind);
+    const list = [];
+    for (const hh of poses.horses || []) list.push([hh.y, () => { groundShadow(P, hh.x, hh.y + 2, 100 * hh.s, 9 * hh.s); horse({ ...hh, t: q }); }]);
+    if (poses.sheep) { const sp = poses.sheep; list.push([sp.y, () => { groundShadow(P, sp.x, sp.y + 2, 50 * sp.s, 7 * sp.s); sheep({ ...sp, t: q }); }]); }
+    list.sort((a, b) => a[0] - b[0]).forEach(e => e[1]());
+    tufts(P, 68, 40, -400, W + 500, 640, 760, 20, 40, q, wind);
+  });
+  layer(1.5, () => plumes(P, 69, 18, -500, W + 700, 790, 140, 230, q, .4));
+}
+const H1 = { x: 930, y: 590, s: 1.05, dir: -1, col: GREY, id: 710 };
+const H2 = { x: 1110, y: 566, s: .92, dir: -1, col: BAY, id: 740 };
+const H3 = { x: 1236, y: 548, s: .84, dir: -1, col: DUN, id: 770 };
+function shotSpeaks(u) {
+  const q = twos(u);
+  CAM = { x: 660, y: 380, z: 1 };
+  const graze = (t0, ph) => K(u, [[0, .55], [t0, .55], [t0 + .5, -1.05], [t0 + .8, -.9]], easeOut) + (u < t0 ? Math.max(0, Math.sin(q * 5 + ph)) * .06 : 0);
+  const sx = K(u, [[0, 110], [3, 330]], x => x);
+  const talking = (u > 3.2 && u < 7) || (u > 7.3 && u < 11.5);
+  campScene(u, .9, 330, {
+    sheep: { x: sx, y: 590, s: 1.25, dir: 1, gait: u < 3 ? 'walk' : 'stand', dist: sx - 110, head: u > 8.4 && u < 10.6 ? -.15 : .05, talk: talking,
+      look: u > 8.4 && u < 10.6 ? [.7, -.6] : [1, -.2], worry: K(u, [[0, .3], [4, 1]]), droop: .5, blink: u > 6.9 && u < 7.05 },
+    horses: [
+      { ...H1, neck: graze(4.0, 0), ear: u > 4 ? -.4 : .3, look: [1, 0], tail: Math.sin(u * 2) * .3, blink: u > 10 && u < 10.12 },
+      { ...H2, neck: graze(4.6, 1), ear: u > 4.6 ? -.4 : .3, look: u > 11.6 ? [-1, 0] : [1, 0], tail: Math.sin(u * 1.6 + 1) * .3 },
+      { ...H3, neck: graze(5.2, 2), ear: u > 5.2 ? -.3 : .3, look: [1, .2], tail: Math.sin(u * 1.8 + 2) * .3, blink: u > 12.5 && u < 12.62 },
+    ],
+  });
+}
+function shotAnswer(u) {
+  CAM = { x: K(u, [[0, 660], [10, 690]]), y: K(u, [[0, 380], [10, 420]]), z: K(u, [[0, 1], [10, 1.16]]) };
+  const hx = K(u, [[0, 930], [2, 860]], x => x);
+  const toFire = u > 6.8;
+  campScene(u, 1, 352, {
+    sheep: { x: 330, y: 590, s: 1.25, dir: 1, head: K(u, [[0, .05], [1.5, -.12]]), look: toFire ? [.6, -.8] : [1, -.4], worry: 1, droop: K(u, [[0, .5], [5, .2]]), blink: u > 3.6 && u < 3.72, t: u },
+    horses: [
+      { ...H1, x: hx, gait: u < 2 ? 'walk' : 'stand', dist: 930 - hx, neck: K(u, [[0, -.9], [2.2, -.15], [6.6, -.15], [7.2, -.75]]), head: K(u, [[0, 1.55], [2.2, 1.75], [6.6, 1.75], [7.2, 1.35]]),
+        ear: K(u, [[0, -.4], [7, -.4], [7.4, .5]]), look: toFire ? [-.6, -1] : [1, .3], brow: .8, talk: (u > 1 && u < 4.3) || (u > 4.6 && u < 9.2), blink: u > 4.4 && u < 4.55 },
+      { ...H2, neck: K(u, [[0, -.9], [5, -.9], [5.3, -.7], [5.6, -.9], [5.9, -.72], [6.2, -.9]]), ear: -.3, look: toFire ? [-1, -.6] : [1, 0] },
+      { ...H3, neck: -.9, ear: -.2, look: toFire ? [-1, -.6] : [1, .1], blink: u > 8 && u < 8.12 },
+    ],
+  });
+}
+
+// ---------- the horses' telling: a band painted round a pot ----------
+const OCH = '#c8692f', CRM = '#ecdab4', CLAY = '#4a2c1c';
+function frieze(col, w) { ctx.strokeStyle = col; ctx.lineWidth = w; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; }
+function fLine(pts, w = 10, col = OCH) { frieze(col, w); ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); for (const p of pts.slice(1)) ctx.lineTo(p[0], p[1]); ctx.stroke(); }
+// A figure in the manner of painted pottery: round head, triangle body, line limbs.
+function fPerson(x, y, o, id) {
+  const lean = o.lean || 0, d = o.dir || 1;
+  const hip = [x, y - 92], sh = [x + d * Math.sin(lean) * 70, y - 92 - Math.cos(lean) * 70];
+  if (o.cloak) ink([[sh[0] - 30, sh[1] + 2], [sh[0] + 30, sh[1] + 2], [x + 48, y - 26], [x - 48, y - 26]], { fill: CRM, stroke: OCH, w: 5, id: id + 9, sharp: true });
+  fLine([hip, [x - 22, y - 6], [x - 26, y]], 10); fLine([hip, [x + 20, y - 6], [x + 28, y]], 10);
+  if (!o.cloak) ink([[sh[0] - 28, sh[1]], [sh[0] + 28, sh[1]], [hip[0] + 4, hip[1] + 6], [hip[0] - 4, hip[1] + 6]], { fill: OCH, stroke: false, sharp: true, id: id + 1, j: 1.5 });
+  const arm = (a1, a2, el) => { const e = [sh[0] + Math.cos(a1) * 40, sh[1] + Math.sin(a1) * 40], h = [e[0] + Math.cos(a2) * 38, e[1] + Math.sin(a2) * 38]; if (!o.cloak || el) fLine([[sh[0] + (Math.cos(a1) > 0 ? 20 : -20), sh[1] + 4], e, h], 8); return h; };
+  const hf = arm(o.a1 ?? .9, o.a2 ?? 1.4), hb = arm(o.b1 ?? 2.2, o.b2 ?? 1.7);
+  const hc = [sh[0] + d * Math.sin(lean + (o.tilt || 0)) * 30, sh[1] - Math.cos(lean + (o.tilt || 0)) * 30];
+  ink(ellPts(hc, 17, 17, 12), { fill: OCH, stroke: false, id: id + 2, j: 1.4 });
+  ink([[hc[0] + d * 10, hc[1] - 2], [hc[0] + d * 14, hc[1] - 2]], { w: 3, stroke: CLAY, id: id + 3 });
+  if (o.cloak) { ink([[sh[0] - 30, sh[1] + 2], [sh[0] + 30, sh[1] + 2], [sh[0] + 34, sh[1] + 16], [sh[0] - 34, sh[1] + 16]], { fill: CRM, stroke: OCH, w: 4, id: id + 10, sharp: true }); for (let k = 0; k < 6; k++) fLine([[x - 44 + k * 17, y - 36], [x - 36 + k * 17, y - 28], [x - 28 + k * 17, y - 36]], 3); }
+  return { hf, hb, sh };
+}
+function fSheep(x, y, wool, d, id, jx = 0) {
+  const rx = lerp(44, 64, wool), ry = lerp(24, 40, wool), c = [x + jx, y - 58 - ry * .3];
+  for (const k of [-1, 1]) for (const kk of [0, 1]) fLine([[x + jx + k * 28 + kk * 6, y - 52], [x + jx + k * 28 + kk * 6 + 2, y]], 6);
+  const pts = [];
+  for (let i = 0; i < 26; i++) { const a = i / 26 * Math.PI * 2, b = wool * (i % 2 ? 8 : 0); pts.push([c[0] + Math.cos(a) * (rx + b), c[1] + Math.sin(a) * (ry + b)]); }
+  ink(pts, { fill: wool > .05 ? CRM : OCH, stroke: OCH, w: 5, id, j: 1.2 });
+  ink(ellPts([c[0] + d * (rx + 12), c[1] - 14], 15, 10, 10), { fill: OCH, stroke: false, id: id + 1 });
+  fLine([[c[0] + d * (rx + 4), c[1] - 22], [c[0] + d * (rx - 10), c[1] - 30]], 5);
+}
+function spiralBand(y, r, off) {
+  frieze(CRM, 4);
+  for (let k = -2; k < 22; k++) {
+    const x = k * 96 - off;
+    ctx.beginPath();
+    for (let i = 0; i <= 48; i++) { const f = i / 48, a = f * Math.PI * 3.2, rr = r * (1 - f * .82); ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr * (k % 2 ? 1 : -1)); }
+    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x + r, y); ctx.bezierCurveTo(x + r + 20, y + (k % 2 ? -r : r), x + 96 - r - 20, y + (k % 2 ? -r : r), x + 96 - r, y); ctx.stroke();
+  }
+}
+function shotFrieze(u) {
+  const q = twos(u);
+  CAM = { x: W / 2, y: H / 2, z: 1 };
+  const scroll = K(u, [[0, -160], [18, 1640]], f => f);
+  ctx.fillStyle = '#2a170f'; ctx.fillRect(-10, -10, W + 20, H + 20);
+  ctx.fillStyle = CLAY; ctx.fillRect(-10, 70, W + 20, 580);
+  dabs(-10, 70, W + 20, 580, '#6a4028', 90, 801, 20, 90, .2);
+  frieze(OCH, 6); for (const yy of [104, 152, 566, 614]) { ctx.beginPath(); ctx.moveTo(-10, yy); ctx.lineTo(W + 10, yy); ctx.stroke(); }
+  spiralBand(128, 18, frac(scroll / 96) * 96);
+  spiralBand(590, 18, frac(scroll / 96) * 96);
+  ctx.save(); ctx.translate(640 - scroll, 0);
+  const G = 520;
+  // 1. the wool is pulled from the sheep
+  const wool = 1 - seg(u, .8, 7.6), pc = frac(u / 1.3), pull = Math.sin(pc * Math.PI);
+  fSheep(0, G, wool, 1, 810);
+  const man1 = fPerson(120, G, { lean: -.5, dir: -1, a1: lerp(2.3, 3.6, pull), a2: lerp(2.0, 4.0, pull), b1: 1.9, b2: 1.4 }, 820);
+  if (wool > .05) ink(ellPts(man1.hf, 12, 9, 8), { fill: CRM, stroke: OCH, w: 3, id: 830 });
+  for (let i = 0; i < 8; i++) { const tf = frac(u / 1.3 - i * .13 - .5); if (u > .8 + i * .9 && wool > 0) { const p = [lerp(120, 250, tf), G - 160 + 300 * (tf - .5) ** 2 * 1.4 - 60 * Math.sin(tf * Math.PI)]; ink(ellPts(p, 8, 6, 7), { fill: CRM, stroke: false, id: 840 + i }); } }
+  const heap = seg(u, .8, 7.6);
+  ink([[200, G], [210 + 0, G - 14 - heap * 46], [250, G - 20 - heap * 60], [292, G - 12 - heap * 40], [300, G]], { fill: CRM, stroke: OCH, w: 4, id: 850 });
+  // 2. it is spun on a drop spindle
+  const sx = 560, drop = frac(u / 3.2);
+  const spin = fPerson(sx, G, { a1: -2.2, a2: -1.6, b1: .6, b2: -.2, dir: 1 }, 860);
+  ink(ellPts([spin.hf[0], spin.hf[1] - 22], 22, 16, 10), { fill: CRM, stroke: OCH, w: 3, id: 870 });
+  const sp = [spin.hb[0] + 10, spin.hb[1] + 40 + drop * 150];
+  frieze(CRM, 2.5); ctx.beginPath(); ctx.moveTo(spin.hf[0], spin.hf[1] - 10); ctx.lineTo(spin.hb[0], spin.hb[1]); ctx.lineTo(sp[0], sp[1]); ctx.stroke();
+  fLine([[sp[0], sp[1]], [sp[0], sp[1] + 44]], 4, OCH);
+  const whw = 4 + Math.abs(Math.cos(q * 18)) * 14;
+  ink(ellPts([sp[0], sp[1] + 34], whw, 5, 10), { fill: CRM, stroke: OCH, w: 2.5, id: 871 });
+  // 3. woven on a loom hung with weights
+  const lx = 1060, top = G - 300, cloth = seg(u, 6, 12);
+  fLine([[lx - 110, G], [lx - 96, top - 20]], 9); fLine([[lx + 110, G], [lx + 96, top - 20]], 9); fLine([[lx - 116, top], [lx + 116, top]], 10);
+  for (let k = 0; k < 13; k++) {
+    const wx = lx - 84 + k * 14, wy = G - 70 - (k % 3) * 14;
+    fLine([[wx, top], [wx, wy]], 2, CRM);
+    ink(ellPts([wx, wy + 8], 6, 8, 8), { fill: OCH, stroke: false, id: 880 + k });
+  }
+  const cb = top + 10 + cloth * 150;
+  ink([[lx - 88, top + 6], [lx + 88, top + 6], [lx + 88, cb], [lx - 88, cb]], { fill: CRM, stroke: OCH, w: 3, sharp: true, id: 900 });
+  for (let k = 0; k < 4; k++) { const yy = top + 30 + k * 34; if (yy < cb - 6) fLine([[lx - 84, yy], [lx + 84, yy]], 4, OCH); }
+  const shut = Math.sin(u * 2.4);
+  const weaver = fPerson(lx + 200, G, { dir: -1, lean: -.15, a1: lerp(3.6, 3.9, shut * .5 + .5), a2: lerp(3.2, 3.5, shut * .5 + .5), b1: 2.3, b2: 1.6 }, 910);
+  ink(ellPts([lx + shut * 70, cb + 4], 14, 5, 8), { fill: OCH, stroke: CRM, w: 2, id: 915 });
+  void weaver;
+  // 4. the master in his warm cloak; the sheep with none
+  const mx = 1560;
+  fire(mx - 130, G, 1.2, u, 920);
+  fPerson(mx, G, { cloak: true, tilt: -.25 + Math.sin(q * 1.2) * .04, dir: -1 }, 930);
+  const shiv = Math.sin(u * 60) * 2.2;
+  fSheep(mx + 190, G, 0, 1, 940, shiv);
+  for (let k = 0; k < 3; k++) fLine([[mx + 270 + k * 12, G - 140 + k * 4], [mx + 278 + k * 12, G - 130 + k * 4], [mx + 270 + k * 12, G - 120 + k * 4], [mx + 278 + k * 12, G - 110 + k * 4]], 3, CRM);
+  ctx.restore();
+  // the pot is round: its band darkens toward the edges as it turns
+  const g = ctx.createLinearGradient(0, 0, W, 0);
+  g.addColorStop(0, 'rgba(10,5,2,.92)'); g.addColorStop(.22, 'rgba(10,5,2,.15)'); g.addColorStop(.5, 'rgba(255,230,190,.06)'); g.addColorStop(.78, 'rgba(10,5,2,.15)'); g.addColorStop(1, 'rgba(10,5,2,.92)');
+  ctx.fillStyle = g; ctx.fillRect(-10, -10, W + 20, H + 20);
+  const gv = ctx.createLinearGradient(0, 70, 0, 650);
+  gv.addColorStop(0, 'rgba(10,5,2,.5)'); gv.addColorStop(.15, 'rgba(10,5,2,0)'); gv.addColorStop(.85, 'rgba(10,5,2,0)'); gv.addColorStop(1, 'rgba(10,5,2,.5)');
+  ctx.fillStyle = gv; ctx.fillRect(-10, 70, W + 20, 580);
+}
+
+// The sheep looks at itself.
+function shotBare(u) {
+  CAM = { x: 420, y: K(u, [[0, 470], [9, 480]]), z: K(u, [[0, 1.95], [9, 2.12]]) };
+  const shiver = u > 4.4 && u < 6.6 ? Math.sin(u * 70) * 1.4 : 0;
+  campScene(u, 1.15, 392, {
+    pull: ease(seg(u, 3, 4.5)),
+    sheep: { x: 330, y: 590, s: 1.25, dir: 1, head: K(u, [[0, -.05], [1.6, -.05], [2.6, .75], [4.4, .75], [5, .2]]), look: K(u, [[0, [.6, -.6]], [1.6, [.6, -.6]], [2.4, [-1, 1]], [4.4, [-1, 1]], [5, [0, .3]]]),
+      worry: 1, droop: K(u, [[0, .3], [2.6, .3], [3.4, 1.2]]), jx: shiver, crouch: u > 4.4 && u < 6.6 ? .3 : .05, blink: (u > 3.8 && u < 4.0) || (u > 7.4 && u < 7.55), spread: .2 },
+    horses: [{ ...H1, neck: -.35, head: 1.6, look: [1, .2], brow: .8 }],
+  });
+}
+// It runs away into the plain, toward the sun.
+function shotFlight(u) {
+  CAM = { x: K(u, [[0, 420], [2.2, 420], [12, 660]]), y: K(u, [[0, 480], [2.2, 470], [12, 370]]), z: K(u, [[0, 2.05], [2.2, 1.9], [12, .96]]) };
+  const t0 = 1.9, tr = Math.max(0, u - t0);
+  const zz = 1 + tr * 1.25, k = 1 / zz;
+  const run = u > t0;
+  const ss = 1.25 * k, sx = lerp(SUNX + 60, 330, k), sy = lerp(436, 590, k) - Math.sin(clamp(tr / .5) * Math.PI) * 26 * ss;
+  const ant = K(u, [[0, 0], [.9, 0], [1.6, 1], [t0, .4]]);
+  campScene(u, K(u, [[0, 1.15], [13, 1.45]]), K(u, [[0, 392], [13, 430]]), {
+    pull: 1,
+    sheep: { x: run ? sx : 330, y: run ? sy : 590, s: run ? ss : 1.25, dir: 1, gait: run ? 'run' : 'stand', ph: tr * 2.6, crouch: run ? 0 : ant,
+      stretch: run ? clamp(1 - tr * 2) * .8 : 0, head: run ? -.25 : K(u, [[0, .2], [.7, -.25], [1.6, .3]]), wide: K(u, [[0, 0], [.4, 1]]), look: [1, 0], worry: 1, droop: run ? -.4 : K(u, [[0, .6], [.5, -.3]]) },
+    horses: [
+      { ...H1, neck: K(u, [[0, -.35], [3, -.9]]), look: [-1, -.5], ear: -.4 },
+      { ...H2, neck: -.9, look: [-1, -.4], ear: -.3 },
+      { ...H3, neck: K(u, [[0, -.6], [4, -1]]), look: [-1, -.6], ear: -.4 },
+    ],
+  });
+}
+// The end: night on the steppe, and the fable as Schleicher wrote it.
+const PIE = 'Avis, jasmin varnā na ā ast, dadarka akvams, tam, vāgham garum vaghantam, tam, bhāram magham, tam, manum āku bharantam. Avis akvabhjams ā vavakat: kard aghnutai mai vidanti manum akvams agantam. Akvāsas ā vavakant: krudhi avai, kard aghnutai vividvant-svas: manus patis varnām avisāms karnauti svabhjam gharmam vastram avibhjams ka varnā na asti. Tat kukruvants avis agram ā bhugat.';
+function shotEnd(u) {
+  const P = pal(2), hz = 520;
+  CAM = { x: 640, y: 360, z: 1 };
+  layer(.05, () => { sky(P, hz, [SUNX, hz + 30, 0, 420]); });
+  const r = R(990); ctx.fillStyle = '#f4ead6';
+  for (let i = 0; i < 160; i++) { const x = r() * W, y = r() * (hz - 20), a = r(); ctx.globalAlpha = clamp((u - a * 3) / 2) * (.3 + .7 * r()) * (.75 + .25 * Math.sin(u * 2 + i)); ctx.beginPath(); ctx.arc(x, y, .6 + r() * 1.3, 0, 7); ctx.fill(); }
+  ctx.globalAlpha = 1;
+  layer(.2, () => farLand(P, hz, 993, [[300, 50, 16], [1020, 40, 12]]));
+  layer(.5, () => { plain(P, hz, 995); fire(980, hz + 30, .35, u, 996); });
+  ctx.save(); ctx.textAlign = 'center';
+  ctx.globalAlpha = ease(seg(u, .3, 1.5)); ctx.fillStyle = '#f2e6cc'; ctx.font = 'italic 34px ' + SERIF; ctx.fillText('Avis akvāsas ka', W / 2, 92);
+  ctx.font = 'italic 20px ' + SERIF; ctx.fillStyle = '#d9cbb0';
+  const lines = wrap(PIE, 940); let y = 140;
+  lines.forEach((l, i) => { ctx.globalAlpha = ease(seg(u, .8 + i * .45, 1.6 + i * .45)) * .95; ctx.fillText(l, W / 2, y); y += 31; });
+  ctx.restore();
+}
+
+// ---------- the exposure sheet ----------
+const SHOTS = [
+  { dur: 6.5, draw: shotTitle, caps: [] },
+  { dur: 10.5, draw: shotHill, caps: [[1, 6.6, 'On a hill stood a sheep that had no wool.']] },
+  { dur: 21, draw: shotProcession, caps: [[.5, 6.6, 'It saw some horses: one pulling a heavy wagon,'], [7.2, 11.6, 'one carrying a great load,'], [12.4, 16.4, 'and one carrying a man, fast.']] },
+  { dur: 14, draw: shotSpeaks, caps: [[3.2, 7, '“My heart aches,” the sheep said to the horses,'], [7.3, 11.5, '“when I see a man driving horses.”']] },
+  { dur: 10, draw: shotAnswer, caps: [[1, 4.3, '“Listen, sheep,” said the horses.'], [4.6, 9.2, '“Our hearts ache when we see this:']] },
+  { dur: 18, draw: shotFrieze, caps: [[.6, 8.4, 'the man, the master, takes the wool of the sheep'], [9, 16.8, 'and makes it into a warm coat for himself.']] },
+  { dur: 9, draw: shotBare, caps: [[1, 6.4, 'And the sheep has no wool.”']] },
+  { dur: 13, draw: shotFlight, caps: [[2.4, 7.6, 'Hearing this, the sheep fled into the plain.']] },
+  { dur: 16, draw: shotEnd, caps: [[5.4, 10.2, 'August Schleicher wrote the fable in 1868, in the language he had reconstructed as the ancestor of Sanskrit, Greek, Latin and their kin.'], [10.6, 15.4, 'It has been rewritten many times since, as the reconstruction changed.']] },
+];
+// Reading time: every caption stays up long enough to read (about 175 words a minute).
+// Where the action under a caption is shorter than that, it first plays slower (up to
+// STRETCH times), then holds its last pose for whatever time is still needed.
+const READ = text => 1.2 + text.split(/\s+/).length / 2.9, STRETCH = 1.5;
+for (const S of SHOTS) {
+  const knots = [[0, 0]]; let real = 0, story = 0;
+  S.realCaps = [];
+  for (const [a, b, text] of S.caps) {
+    real += a - story; story = a; knots.push([story, real]);
+    const ra = real, avail = b - a, need = READ(text), k = Math.min(STRETCH, Math.max(1, need / avail));
+    real += avail * k; story = b; knots.push([story, real]);
+    if (need > avail * k) { real += need - avail * k; knots.push([story, real]); }
+    S.realCaps.push([ra, real, text]);
+  }
+  real += S.dur - story; knots.push([S.dur, real]);
+  S.knots = knots; S.real = real;
+}
+// Map time on the screen to time in the shot's own action.
+function storyTime(S, r) {
+  const k = S.knots;
+  for (let i = 1; i < k.length; i++) if (r <= k[i][1]) { const [s0, r0] = k[i - 1], [s1, r1] = k[i]; return r1 > r0 ? s0 + (s1 - s0) * (r - r0) / (r1 - r0) : s1; }
+  return S.dur;
+}
+const TOTAL = SHOTS.reduce((a, s) => a + s.real, 0);
+
+function wrap(text, max) {
+  const words = text.split(' '), lines = []; let line = '';
+  for (const w of words) { const t = line ? line + ' ' + w : w; if (ctx.measureText(t).width > max && line) { lines.push(line); line = w; } else line = t; }
+  if (line) lines.push(line);
+  return lines;
+}
+function caption(text, a) {
+  ctx.save(); ctx.globalAlpha = a;
+  const g = ctx.createLinearGradient(0, H - 200, 0, H); g.addColorStop(0, 'rgba(15,12,10,0)'); g.addColorStop(.5, 'rgba(15,12,10,.5)'); g.addColorStop(1, 'rgba(15,12,10,.75)');
+  ctx.fillStyle = g; ctx.fillRect(0, H - 200, W, 200);
+  ctx.font = 'italic 27px ' + SERIF; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  const lines = wrap(text, 1000); let y = H - 46 - (lines.length - 1) * 36;
+  ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 8; ctx.fillStyle = '#f5ecdb';
+  for (const l of lines) { ctx.fillText(l, W / 2, y); y += 36; }
+  ctx.restore();
+}
+const GRAIN = [0, 1, 2].map(k => {
+  const c = document.createElement('canvas'); c.width = 320; c.height = 180;
+  const g = c.getContext('2d'), im = g.createImageData(320, 180), r = R(55 + k);
+  for (let i = 0; i < im.data.length; i += 4) { const v = 205 + r() * 50; im.data[i] = v; im.data[i + 1] = v * .985; im.data[i + 2] = v * .95; im.data[i + 3] = 255; }
+  g.putImageData(im, 0, 0); return c;
+});
+
+function render(t) {
+  BOIL = Math.floor(t * 8);
+  let acc = 0, i = 0;
+  while (i < SHOTS.length - 1 && t >= acc + SHOTS[i].real) { acc += SHOTS[i].real; i++; }
+  const S = SHOTS[i], r = t - acc, u = storyTime(S, r);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cvs.width, cvs.height);
+  ctx.setTransform(VIEW.k, 0, 0, VIEW.k, VIEW.ox, VIEW.oy);
+  ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
+  ctx.save(); S.draw(u); ctx.restore();
+  ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.globalAlpha = .4; ctx.drawImage(GRAIN[BOIL % 3], 0, 0, W, H); ctx.restore();
+  const v = ctx.createRadialGradient(W / 2, H / 2, H * .45, W / 2, H / 2, H * 1.05);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(10,6,3,.45)'); ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+  const fade = Math.max(0, 1 - r / .5, 1 - (S.real - r) / .5);
+  if (fade > 0) { ctx.fillStyle = `rgba(18,15,12,${fade})`; ctx.fillRect(0, 0, W, H); }
+  for (const [a, b, text] of S.realCaps) {
+    if (r > a && r < b) caption(text, Math.min(1, (r - a) / .35, (b - r) / .35));
+  }
+  ctx.restore();
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2), cw = innerWidth, ch = innerHeight;
+  cvs.width = Math.round(cw * dpr); cvs.height = Math.round(ch * dpr);
+  cvs.style.width = cw + 'px'; cvs.style.height = ch + 'px';
+  const k = Math.min(cw / W, ch / H) * dpr;
+  VIEW = { k, ox: (cvs.width - W * k) / 2, oy: (cvs.height - H * k) / 2 };
+}
+const FIX = new URLSearchParams(location.search).get('t');
+if (new URLSearchParams(location.search).has('debug')) { let a = 0; console.log('TOTAL ' + TOTAL.toFixed(1) + ' starts ' + SHOTS.map(S => { const x = a; a += S.real; return x.toFixed(1); }).join(',')); }
+let clock = 0, last = null, paused = false;
+let ended = false;
+function frame(now) {
+  if (last !== null && !paused && !ended) clock += Math.min(.1, (now - last) / 1000);
+  last = now;
+  if (clock >= TOTAL - .001) { clock = TOTAL - .001; ended = true; }
+  render(clock);
+  if (ended) endCard();
+  requestAnimationFrame(frame);
+}
+// The film plays once and stops on its last (faded) frame with an offer to watch again.
+function endCard() {
+  ctx.setTransform(VIEW.k, 0, 0, VIEW.k, VIEW.ox, VIEW.oy);
+  ctx.save(); ctx.font = 'italic 34px ' + SERIF; ctx.textAlign = 'center'; ctx.fillStyle = '#f5ecdb';
+  ctx.fillText('↻  Watch again', W / 2, H / 2 + 12); ctx.restore();
+}
+function toggle() { if (ended) { clock = 0; ended = false; paused = false; } else paused = !paused; }
+addEventListener('resize', () => { resize(); if (FIX !== null) render(parseFloat(FIX)); });
+addEventListener('click', toggle);
+addEventListener('keydown', e => { if (e.key === ' ') { toggle(); e.preventDefault(); } });
+resize();
+// A held frame is redrawn for its first second, in case the page is still being sized.
+let held = 0;
+function hold() { resize(); render(parseFloat(FIX)); if (++held < 60) requestAnimationFrame(hold); }
+if (FIX !== null) hold(); else requestAnimationFrame(frame);
+</script>
+</body>
+</html>
