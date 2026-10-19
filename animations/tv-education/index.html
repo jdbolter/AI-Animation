@@ -1,0 +1,1567 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Room 4</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    canvas { display: block; cursor: pointer; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Room 4: an alternate history of the American grade-school classroom, 1962–2026, in which
+// television replaced the textbook. Five vignettes; drawn in canvas as a multiplane cartoon.
+// Characters are drawn "on twos" with boiling ink lines; backgrounds are painted once and stay still.
+// Add ?t=SECONDS to the URL to hold a single frame. Click to pause; it plays once, then click to watch again.
+
+const W = 1280, H = 720;
+const cvs = document.getElementById('c');
+let ctx = cvs.getContext('2d');
+let VIEW = { k: 1, ox: 0, oy: 0 };
+
+const INK = '#2a2420';
+const SERIF = '"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif';
+const HAND = '"Bradley Hand","Segoe Print","Comic Sans MS",cursive';
+const CHALK = 'Chalkduster,"Chalkboard SE","Comic Sans MS",cursive';
+const SANS = '"Helvetica Neue",Helvetica,Arial,sans-serif';
+const MONO = '"Courier New",Courier,monospace';
+
+// ---------- math ----------
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, f) => a + (b - a) * f;
+const ease = f => { f = clamp(f); return f * f * (3 - 2 * f); };
+const easeOut = f => { f = clamp(f); return 1 - (1 - f) ** 3; };
+const easeIn = f => { f = clamp(f); return f * f * f; };
+const seg = (u, a, b) => clamp((u - a) / (b - a));
+const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+const twos = u => Math.floor(u * 12) / 12;
+const frac = x => x - Math.floor(x);
+const within = (u, a, b) => u > a && u < b;
+function mix(a, b, f) { return Array.isArray(a) ? a.map((x, i) => mix(x, b[i], f)) : a + (b - a) * f; }
+// Exposure-sheet keys: [[time, value], ...], eased between neighbours.
+function K(u, keys, e = ease) {
+  if (u <= keys[0][0]) return keys[0][1];
+  for (let i = 1; i < keys.length; i++) {
+    if (u < keys[i][0]) {
+      const [a, va] = keys[i - 1], [b, vb] = keys[i];
+      return mix(va, vb, e((u - a) / (b - a)));
+    }
+  }
+  return keys[keys.length - 1][1];
+}
+function R(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function rgb(h) { const n = parseInt(h.slice(1), 16); return [n >> 16, n >> 8 & 255, n & 255]; }
+function shade(h, a) {
+  let [r, g, b] = rgb(h);
+  const t = a < 0 ? 0 : 255, p = Math.abs(a);
+  r = Math.round(r + (t - r) * p); g = Math.round(g + (t - g) * p); b = Math.round(b + (t - b) * p);
+  return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+function mixC(a, b, f) { const x = rgb(a), y = rgb(b); return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * clamp(f)).toString(16).padStart(2, '0')).join(''); }
+
+// ---------- ink ----------
+let BOIL = 0;
+function jitterPts(pts, amt, r) { return pts.map(p => [p[0] + (r() - .5) * 2 * amt, p[1] + (r() - .5) * 2 * amt]); }
+function tracePath(p, close, sharp) {
+  ctx.beginPath();
+  if (sharp || p.length < 3) {
+    ctx.moveTo(p[0][0], p[0][1]);
+    for (let i = 1; i < p.length; i++) ctx.lineTo(p[i][0], p[i][1]);
+    if (close) ctx.closePath();
+    return;
+  }
+  if (close) {
+    const n = p.length; const m = mid(p[n - 1], p[0]);
+    ctx.moveTo(m[0], m[1]);
+    for (let i = 0; i < n; i++) { const q = p[i], m2 = mid(q, p[(i + 1) % n]); ctx.quadraticCurveTo(q[0], q[1], m2[0], m2[1]); }
+    ctx.closePath();
+  } else {
+    ctx.moveTo(p[0][0], p[0][1]);
+    for (let i = 1; i < p.length - 1; i++) { const m = mid(p[i], p[i + 1]); ctx.quadraticCurveTo(p[i][0], p[i][1], m[0], m[1]); }
+    const l = p[p.length - 1]; ctx.lineTo(l[0], l[1]);
+  }
+}
+// A hand-inked shape. Fill and line get separate jitter, like paint laid under a drawn line.
+// Lines "boil" (redraw slightly differently) unless o.still is set.
+function ink(pts, o = {}) {
+  const id = o.id || 1, j = o.j ?? 1.1, seed = o.still ? id * 7919 : id * 7919 + BOIL * 104729;
+  const close = o.close ?? !!o.fill;
+  if (o.fill) { tracePath(jitterPts(pts, j * .8, R(seed + 17)), true, o.sharp); ctx.fillStyle = o.fill; ctx.fill(); }
+  if (o.stroke !== false) {
+    tracePath(jitterPts(pts, j, R(seed)), close, o.sharp);
+    ctx.strokeStyle = o.stroke || INK; ctx.lineWidth = o.w || 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.stroke();
+  }
+}
+function ellPts(c, rx, ry, n = 12) { const p = []; for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; p.push([c[0] + Math.cos(a) * rx, c[1] + Math.sin(a) * ry]); } return p; }
+function box(x, y, w, h, o = {}) { ink([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], { sharp: true, still: true, j: .6, ...o }); }
+function limb(pts, w, col, id) { ink(pts, { w: w + 3, stroke: INK, id }); ink(pts, { w, stroke: col, id }); }
+function dabs(x, y, w, h, col, n, seed, r0 = 6, r1 = 20, a = .25) {
+  const r = R(seed); ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = col;
+  for (let i = 0; i < n; i++) {
+    const cx = x + r() * w, cy = y + r() * h, rx = lerp(r0, r1, r()), ry = rx * lerp(.3, .7, r());
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, (r() - .5) * .6, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+}
+function strand(c, w0, w1) {
+  const L = [], Rr = [];
+  for (let i = 0; i < c.length; i++) {
+    const a = c[Math.max(0, i - 1)], b = c[Math.min(c.length - 1, i + 1)];
+    let nx = -(b[1] - a[1]), ny = b[0] - a[0]; const l = Math.hypot(nx, ny) || 1; nx /= l; ny /= l;
+    const w = lerp(w0, w1, i / (c.length - 1)) / 2;
+    L.push([c[i][0] + nx * w, c[i][1] + ny * w]); Rr.push([c[i][0] - nx * w, c[i][1] - ny * w]);
+  }
+  return L.concat(Rr.reverse());
+}
+// Two-bone reach: elbow (or knee) and the end point; pick scores the two possible joints.
+function ik(S, T, a, b, pick) {
+  const dx = T[0] - S[0], dy = T[1] - S[1];
+  const dd = clamp(Math.hypot(dx, dy), Math.abs(a - b) + 1, a + b - .5);
+  const ang = Math.atan2(dy, dx);
+  const A = Math.acos(clamp((a * a + dd * dd - b * b) / (2 * a * dd), -1, 1));
+  const e1 = [S[0] + Math.cos(ang + A) * a, S[1] + Math.sin(ang + A) * a];
+  const e2 = [S[0] + Math.cos(ang - A) * a, S[1] + Math.sin(ang - A) * a];
+  const E = pick(e1) >= pick(e2) ? e1 : e2;
+  const ha = Math.atan2(T[1] - E[1], T[0] - E[0]);
+  return [E, [E[0] + Math.cos(ha) * b, E[1] + Math.sin(ha) * b]];
+}
+function text(t, x, y, font, col, align = 'center', a = 1) {
+  ctx.save(); ctx.globalAlpha *= a; ctx.font = font; ctx.fillStyle = col; ctx.textAlign = align; ctx.textBaseline = 'alphabetic'; ctx.fillText(t, x, y); ctx.restore();
+}
+// Writing that appears as if by hand, left to right.
+function written(t, x, y, font, col, f, align = 'left') {
+  if (f <= 0) return;
+  ctx.save(); ctx.font = font; const w = ctx.measureText(t).width; const x0 = align === 'center' ? x - w / 2 : x;
+  ctx.beginPath(); ctx.rect(x0 - 4, y - 200, (w + 8) * clamp(f), 300); ctx.clip();
+  ctx.fillStyle = col; ctx.textAlign = 'left'; ctx.fillText(t, x0, y); ctx.restore();
+}
+
+// ---------- multiplane camera ----------
+// p is the plane's depth factor: 1 = character plane, <1 = farther, >1 = nearer the lens.
+let CAM = { x: W / 2, y: H / 2, z: 1 };
+function layer(p, fn) {
+  ctx.save();
+  const z = 1 + (CAM.z - 1) * p;
+  ctx.translate(W / 2, H / 2); ctx.scale(z, z);
+  ctx.translate(-(W / 2 + (CAM.x - W / 2) * p), -(H / 2 + (CAM.y - H / 2) * p));
+  fn();
+  ctx.restore();
+}
+
+// ---------- people ----------
+// Body plans, in pixels at s = 1. Children have big heads and short limbs.
+const KID = { r: 22, neck: 5, torso: 50, ua: 27, fa: 25, th: 33, sh: 31, chest: 15, back: 12, arm: 8, leg: 10, foot: 11, eye: 1.15 };
+const ADULT = { r: 20, neck: 9, torso: 74, ua: 39, fa: 37, th: 50, sh: 48, chest: 18, back: 15, arm: 9, leg: 12, foot: 14, eye: 1 };
+
+// Hair: a cap over the skull, given as angles (front hairline round over the top to the nape)
+// and an inner hairline, for the profile (p) and the front (f); the head's turn mixes the two.
+const CAPS = {
+  base: { p: [-32, -212, [[-.55, .3], [-.3, -.05], [.12, -.55], [.5, -.62]]], f: [-8, -172, [[-.88, -.2], [-.4, -.62], [.4, -.62], [.88, -.2]]] },
+  crew: { p: [-48, -198, [[-.5, .15], [-.3, -.3], [.1, -.7], [.42, -.78]]], f: [-28, -152, [[-.8, -.45], [-.35, -.78], [.35, -.78], [.8, -.45]]] },
+  bowl: { p: [-12, -214, [[-.6, .32], [-.35, 0], [.3, -.32], [.78, -.3]]], f: [6, -186, [[-.95, -.05], [-.5, -.36], [.5, -.36], [.95, -.05]]] },
+};
+const STYLES = {
+  crew: { cap: 'crew' }, base: { cap: 'base' }, bowl: { cap: 'bowl' },
+  bob: { cap: 'base', side: [-.5, .3, .9, .5, .62] },
+  long: { cap: 'base', side: [-.62, .8, .95, .5, 1.05] },
+  pony: { cap: 'base', tail: true },
+  puffs: { cap: 'base', puffs: true },
+  beehive: { cap: 'base', dome: true, side: [-.5, .25, .95, .42, .5] },
+  bun: { cap: 'base', bun: true },
+  shag: { cap: 'bowl', side: [-.55, .45, .95, .5, .7] },
+};
+
+// The head. C is its centre, ang its rotation; turn 0 is profile, 1 faces the camera.
+function head(C, r, ang, d, o, id) {
+  const t = o.turn || 0, st = STYLES[o.style || 'base'], cap = CAPS[st.cap];
+  const ca = Math.cos(ang), sa = Math.sin(ang);
+  const hp = (hx, hy) => { const x = d * hx * r, y = hy * r; return [C[0] + x * ca - y * sa, C[1] + x * sa + y * ca]; };
+  const hair = o.hair, hairD = shade(hair, -.25);
+  // hair behind the head
+  if (st.side) {
+    const [px, py, fx, rx, ry] = st.side;
+    for (const sg of [-1, 1]) ink(ellPts([0, 0], 1, 1, 12).map(([a, b]) => hp(lerp(px, sg * fx, t) + a * rx, py + b * ry)), { fill: hairD, w: 1.6, id: id + 40 + sg });
+  }
+  if (st.tail) {
+    const sw = Math.sin((o.t || 0) * 3) * .08;
+    const a0 = [lerp(-.82, 0, t), lerp(-.4, -.6, t)];
+    ink(strand([hp(...a0), hp(a0[0] - .45 + sw, a0[1] + .35), hp(a0[0] - .5 + sw * 2, a0[1] + .95)], .42 * r, .18 * r), { fill: hair, w: 1.6, id: id + 43 });
+  }
+  // skull
+  ink(ellPts([0, 0], 1, 1.04, 16).map(([a, b]) => hp(a, b)), { fill: o.skin, w: 2.1, id: id + 1 });
+  // the cap of hair
+  const A = lerp(cap.p[0], cap.f[0], t) * Math.PI / 180, B = lerp(cap.p[1], cap.f[1], t) * Math.PI / 180;
+  const pts = [];
+  for (let i = 0; i <= 14; i++) { const a = lerp(A, B, i / 14); pts.push(hp(Math.cos(a) * 1.08, Math.sin(a) * 1.08)); }
+  for (let i = 0; i < 4; i++) pts.push(hp(lerp(cap.p[2][i][0], cap.f[2][i][0], t), lerp(cap.p[2][i][1], cap.f[2][i][1], t)));
+  ink(pts, { fill: hair, w: 1.8, id: id + 2 });
+  if (st.dome) ink(ellPts([0, 0], 1, 1, 14).map(([a, b]) => hp(lerp(-.15, 0, t) + a * .98, -1 + b * .62)), { fill: hair, w: 1.8, id: id + 3 });
+  if (st.bun) ink(ellPts([0, 0], 1, 1, 10).map(([a, b]) => hp(lerp(-.95, 0, t) + a * .36, lerp(-.45, -1.05, t) + b * .36)), { fill: hair, w: 1.6, id: id + 4 });
+  if (st.puffs) for (const [p, f] of [[[-.05, -1.05], [.8, -.8]], [[-.45, -.95], [-.8, -.8]]]) ink(ellPts([0, 0], 1, 1, 10).map(([a, b]) => hp(lerp(p[0], f[0], t) + a * .44, lerp(p[1], f[1], t) + b * .44)), { fill: hair, w: 1.6, id: id + 5 + p[0] * 10 });
+  // ears
+  const ear = x => ink(ellPts([0, 0], 1, 1, 8).map(([a, b]) => hp(x + a * .15, .1 + b * .2)), { fill: o.skin, w: 1.5, id: id + 6 + x * 10 });
+  ear(lerp(-.1, -.97, t));
+  if (t > .55) ear(.97);
+  // face
+  const fx = lerp(.42, 0, t), lk = o.look || [0, 0], E = (o.b || KID).eye;
+  if (t < .5) ink([hp(lerp(.86, .4, t * 2), -.08), hp(lerp(1.14, .62, t * 2), .2), hp(lerp(.9, .42, t * 2), .3)], { fill: o.skin, w: 1.6, id: id + 7 });
+  else ink([hp(fx + .02, .08), hp(fx + .08, .24), hp(fx - .02, .27)], { w: 1.4, id: id + 7 });
+  if (o.freckles) { ctx.fillStyle = 'rgba(170,90,50,.55)'; for (const [a, b] of [[.12, .22], [.2, .3], [.05, .32], [-.1, .26]]) { const p = hp(fx + a + .12 * (1 - t), b); ctx.beginPath(); ctx.arc(p[0], p[1], .045 * r, 0, 7); ctx.fill(); } }
+  const eyes = [fx + lerp(.13, .36, t)]; if (t > .22) eyes.push(fx - lerp(-.1, .36, t));
+  for (const ex of eyes) {
+    const p = hp(ex + lk[0] * .05, -.04 + lk[1] * .06);
+    if (o.blink) ink([hp(ex - .1, -.03), hp(ex + .1, -.02)], { w: 1.8, id: id + 8 });
+    else {
+      const big = 1 + (o.wide || 0) * .35;
+      ctx.fillStyle = '#1e1612'; ctx.beginPath(); ctx.ellipse(p[0], p[1], .095 * r * E * big, .14 * r * E * big, ang, 0, 7); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(p[0] + .03 * r, p[1] - .05 * r, .035 * r, 0, 7); ctx.fill();
+    }
+    const bw = o.brow || 0;
+    ink([hp(ex - .13, -.27 - bw * .08), hp(ex + .12 * d * d, -.3 + bw * .06)], { w: 1.6, stroke: hairD, id: id + 9 });
+  }
+  if (o.glasses) {
+    for (const ex of eyes) ink(ellPts([0, 0], 1, 1, 10).map(([a, b]) => hp(ex + a * .2, -.03 + b * .16)), { w: 1.6, stroke: '#4a3a30', id: id + 10 });
+    ink([hp(eyes[0] - .2, -.06), hp(lerp(-.05, -.97, t), -.04)], { w: 1.4, stroke: '#4a3a30', id: id + 11 });
+  }
+  // mouth
+  let m = o.mouth || 'smile';
+  if (m === 'talk') m = Math.floor((o.t || 0) * 7) % 2 ? 'o' : 'flat';
+  const mx = fx + lerp(.3, 0, t), mw = lerp(.11, .2, t), my = .5;
+  if (m === 'smile') ink([hp(mx - mw, my - .06), hp(mx, my + .06), hp(mx + mw * .8, my - .07)], { w: 1.7, id: id + 12 });
+  else if (m === 'frown') ink([hp(mx - mw, my + .06), hp(mx, my - .03), hp(mx + mw * .8, my + .06)], { w: 1.7, id: id + 12 });
+  else if (m === 'flat') ink([hp(mx - mw * .8, my), hp(mx + mw * .7, my)], { w: 1.7, id: id + 12 });
+  else if (m === 'o') ink(ellPts([0, 0], 1, 1, 8).map(([a, b]) => hp(mx + a * .07, my + .02 + b * .09)), { fill: '#6a2a24', w: 1.4, id: id + 12 });
+  else if (m === 'grin') ink([hp(mx - mw * 1.2, my - .08), hp(mx + mw, my - .1), hp(mx + mw * .7, my + .06), hp(mx, my + .14), hp(mx - mw, my + .04)], { fill: '#7a2e26', w: 1.5, id: id + 12 });
+  if (o.phones) {
+    const ea = hp(lerp(-.1, -.97, t), .1), eb = hp(lerp(-.1, .97, t), .1), top = hp(lerp(-.1, 0, t), -1.18);
+    ink([ea, top, eb], { w: 3, stroke: '#3a3a40', id: id + 13 });
+    ink(ellPts(ea, .26 * r, .3 * r, 10), { fill: '#4a4a52', w: 1.4, id: id + 14 });
+    if (t > .55) ink(ellPts(eb, .2 * r, .3 * r, 10), { fill: '#4a4a52', w: 1.4, id: id + 15 });
+  }
+  return hp;
+}
+
+// A person in profile (d = 1 faces right). x, y is the hip. Hands are given relative to the
+// shoulder and feet relative to the hip, in local units (mirrored by d), unless handsAbs / feetAbs.
+function person(o) {
+  const b = o.b || KID, s = o.s || 1, d = o.d || 1, id = o.id || 100;
+  const lean = o.lean || 0, tilt = o.tilt || 0;
+  const Hx = o.x, Hy = o.y;
+  const U = [d * Math.sin(lean), -Math.cos(lean)], F = [d * Math.cos(lean), Math.sin(lean)];
+  const P = (v, h) => [Hx + (F[0] * v + U[0] * h) * s, Hy + (F[1] * v + U[1] * h) * s];
+  const S = P(-b.back * .1, b.torso * .88), S2 = P(-b.back * .3, b.torso * .86);
+  const loc = (O, q) => [O[0] + d * q[0] * s, O[1] + q[1] * s];
+  const hands = [0, 1].map(i => (o.handsAbs && o.handsAbs[i]) || loc(i ? S2 : S, (o.hands && o.hands[i]) || [i ? -3 : 3, b.ua + b.fa - 3]));
+  const feet = [0, 1].map(i => (o.feetAbs && o.feetAbs[i]) || loc([Hx, Hy], (o.feet && o.feet[i]) || [i ? -4 : 4, b.th + b.sh - 1]));
+  const armPick = (o.elbowOut ? e => d * e[0] : e => e[1] - d * e[0] * .3);
+  const legPick = e => d * e[0] - e[1] * .05;
+  const skinD = shade(o.skin, -.12), sleeveL = o.sleeve === 'long';
+  function arm(i) {
+    const Sh = i ? S2 : S, [E, Hn] = ik(Sh, hands[i], b.ua * s, b.fa * s, armPick);
+    const c = i ? shade(o.shirt, -.15) : o.shirt;
+    limb([Sh, E], b.arm * s, c, id + 20 + i);
+    limb([E, Hn], (b.arm - 1.5) * s, sleeveL ? c : (i ? skinD : o.skin), id + 22 + i);
+    if (sleeveL) ink(ellPts(Hn, 4.2 * s, 4.2 * s, 7), { fill: i ? skinD : o.skin, w: 1.4, id: id + 24 + i });
+    else ink(ellPts(Hn, 4.2 * s, 4.2 * s, 7), { fill: i ? skinD : o.skin, w: 1.4, id: id + 24 + i });
+    return Hn;
+  }
+  function leg(i) {
+    const [Kn, Ft] = ik([Hx, Hy], feet[i], b.th * s, b.sh * s, legPick);
+    const pc = o.pants ? (i ? shade(o.pants, -.15) : o.pants) : (i ? shade(o.legs || o.skin, -.12) : (o.legs || o.skin));
+    const sc = o.shorts || o.skirt ? (i ? shade(o.legs || o.skin, -.12) : (o.legs || o.skin)) : pc;
+    limb([[Hx, Hy], Kn], b.leg * s, pc, id + 30 + i);
+    limb([Kn, Ft], (b.leg - 1.5) * s, sc, id + 32 + i);
+    const tip = o.tiptoe ? -.5 : 0;
+    ink([[Ft[0] - d * 4 * s, Ft[1] - 4 * s], [Ft[0] + d * b.foot * s, Ft[1] - 1 * s + tip * 6 * s], [Ft[0] + d * b.foot * s, Ft[1] + 3 * s], [Ft[0] - d * 5 * s, Ft[1] + 3 * s]], { fill: i ? shade(o.shoes, -.2) : o.shoes, w: 1.5, id: id + 34 + i });
+    return Kn;
+  }
+  const out = { S, hands, P };
+  out.far = arm(1);
+  const k2 = leg(1);
+  // pelvis
+  ink(ellPts(P(b.chest * .1 - b.back * .2, 4), (b.chest + b.back) * .5 * s, 9 * s, 10), { fill: o.skirt || o.pants || o.shirt, w: 1.8, id: id + 3 });
+  // torso
+  const tp = [[-b.back * .8, -2], [b.chest * .75, -2], [b.chest * .9, b.torso * .35], [b.chest, b.torso * .68], [b.chest * .55, b.torso * .97], [-b.back * .45, b.torso * 1.0], [-b.back, b.torso * .7], [-b.back * .9, b.torso * .3]];
+  ink(tp.map(q => P(...q)), { fill: o.shirt, w: 2.1, id: id + 4 });
+  if (o.stripes) for (const f of [.25, .5, .75]) ink([P(-b.back * .95, b.torso * f), P(b.chest * .95, b.torso * f)], { w: 3 * s, stroke: o.stripes, id: id + 5 + f * 10 });
+  if (o.cardigan) { ink([P(b.chest * .5, b.torso * .96), P(b.chest * .8, b.torso * .55), P(b.chest * .78, 0)], { w: 1.5, stroke: shade(o.shirt, -.35), id: id + 8 }); ink([P(b.chest * .2, b.torso * .98), P(b.chest * .62, b.torso * .9), P(b.chest * .5, b.torso * 1.02)], { fill: o.collar || '#f4efe2', w: 1.3, id: id + 9 }); }
+  if (o.hood) ink([P(-b.back * 1.1, b.torso * .95), P(-b.back * 1.5, b.torso * .75), P(-b.back * .9, b.torso * .62)], { fill: shade(o.shirt, -.12), w: 1.6, id: id + 10 });
+  const k1 = leg(0);
+  if (o.skirt) {
+    const kn = mid(k1, k2), hp0 = [Hx, Hy], ext = [kn[0] + (kn[0] - Hx) * .18, kn[1] + (kn[1] - Hy) * .18];
+    ink(strand([P(0, 10), hp0, mid(hp0, ext), ext], 28 * s, 38 * s), { fill: o.skirt, w: 1.8, id: id + 11 });
+  }
+  // neck and head
+  const Nb = P(-b.back * .05, b.torso * .96);
+  const hd = o.headD || d, ha = lean + tilt;
+  const U2 = [d * Math.sin(ha), -Math.cos(ha)];
+  const C = [Nb[0] + U2[0] * (b.neck + b.r * .9) * s, Nb[1] + U2[1] * (b.neck + b.r * .9) * s];
+  limb([Nb, mid(Nb, C)], 8 * s, o.skin, id + 12);
+  out.head = C;
+  out.hp = head(C, b.r * s, d * lean + hd * tilt, hd, { ...o, b }, id + 50);
+  if (o.prop) o.prop(out);
+  out.near = arm(0);
+  return out;
+}
+
+// A seated child seen from behind, facing a screen.
+function backKid(o) {
+  const s = o.s || 1, id = o.id || 600, x = o.x, y = o.y;
+  const P = (lx, ly) => [x + lx * s, y + ly * s];
+  const lean = o.lean || 0;
+  const hands = o.hands || [P(-12, -40), P(12, -40)];
+  for (const [i, sx] of [[0, -1], [1, 1]]) {
+    const Sh = P(sx * 19 + lean * 4, -44), [E, Hn] = ik(Sh, hands[i], 25 * s, 23 * s, e => e[1] + Math.abs(e[0] - x) * .4);
+    limb([Sh, E], 8 * s, o.shirt, id + i * 3);
+    limb([E, Hn], 6.5 * s, o.sleeve === 'long' ? o.shirt : o.skin, id + i * 3 + 1);
+  }
+  ink([P(-21 + lean * 4, -46), P(21 + lean * 4, -46), P(17, 4), P(-17, 4)], { fill: o.shirt, w: 2, id: id + 8 });
+  if (o.stripes) for (const f of [-30, -16]) ink([P(-20, f), P(20, f)], { w: 3 * s, stroke: o.stripes, id: id + 9 });
+  const C = P(lean * 8 + (o.headX || 0), -72 + (o.headY || 0)), r = 22 * s;
+  limb([P(lean * 4, -46), C], 9 * s, o.skin, id + 10);
+  const st = o.style || 'base';
+  if (st === 'long' || st === 'bob') ink([[C[0] - r * 1.02, C[1]], [C[0] + r * 1.02, C[1]], [C[0] + r * .95, C[1] + r * (st === 'long' ? 1.6 : .9)], [C[0] - r * .95, C[1] + r * (st === 'long' ? 1.6 : .9)]], { fill: shade(o.hair, -.1), w: 1.6, id: id + 11 });
+  for (const sx of [-1, 1]) ink(ellPts([C[0] + sx * r * .98, C[1] + r * .12], r * .18, r * .24, 8), { fill: o.skin, w: 1.4, id: id + 12 + sx });
+  const low = st === 'crew' ? .35 : .6;
+  const hp = []; for (let i = 0; i <= 16; i++) { const a = Math.PI * (1 - i / 16) * 1.0 + Math.PI; hp.push([C[0] + Math.cos(a) * r * 1.04, C[1] + Math.sin(a) * r * 1.04]); }
+  ink(hp.concat([[C[0] + r * .9, C[1] + r * low], [C[0], C[1] + r * (low + .2)], [C[0] - r * .9, C[1] + r * low]]), { fill: o.hair, w: 1.8, id: id + 15 });
+  if (st === 'pony') ink(strand([[C[0], C[1] + r * .2], [C[0] + 2 * s, C[1] + r * .9], [C[0] - 2 * s, C[1] + r * 1.6]], r * .4, r * .2), { fill: shade(o.hair, -.1), w: 1.5, id: id + 16 });
+  if (st === 'puffs') for (const sx of [-1, 1]) ink(ellPts([C[0] + sx * r * .78, C[1] - r * .8], r * .45, r * .45, 10), { fill: o.hair, w: 1.6, id: id + 17 + sx });
+  if (o.phones) {
+    ink([[C[0] - r * 1.05, C[1] + r * .1], [C[0], C[1] - r * 1.2], [C[0] + r * 1.05, C[1] + r * .1]], { w: 3.5 * s, stroke: '#3a3a40', id: id + 20 });
+    for (const sx of [-1, 1]) ink(ellPts([C[0] + sx * r * 1.02, C[1] + r * .12], r * .2, r * .32, 10), { fill: '#4a4a52', w: 1.4, id: id + 21 + sx });
+  }
+  return { head: C };
+}
+
+// A walk: feet relative to the hip and a bob, from the distance walked.
+function walk(dist, b, stride = 30, lift = 10) {
+  const ph = dist / (stride * 2), L = b.th + b.sh - 2;
+  const f = k => { const p = frac(ph + k); if (p < .5) return [stride / 2 - p * 2 * stride, L]; const g = (p - .5) * 2; return [-stride / 2 + ease(g) * stride, L - Math.sin(Math.PI * g) * lift]; };
+  const fn = f(0), ff = f(.5), sw = fn[0] / (stride / 2);
+  return { feet: [fn, ff], bob: Math.cos(ph * Math.PI * 4) * 2.2, hands: [[-sw * 12, b.ua + b.fa - 4], [sw * 12, b.ua + b.fa - 4]] };
+}
+const SEAT_FEET = b => [[b.th + 3, b.sh + 1], [b.th - 2, b.sh + 1]];
+const KNEEL_FEET = b => [[b.th * .95, b.th + 2], [-b.sh + 4, b.th + 2]];
+
+// ---------- the cast ----------
+const HALLORAN = { b: ADULT, skin: '#f1cdb0', hair: '#9b4a2c', style: 'beehive', shirt: '#5e9c8c', sleeve: 'long', skirt: '#5c5b68', legs: '#e9c9ae', shoes: '#3a2a22', cardigan: true };
+const HALLORAN88 = { ...HALLORAN, hair: '#cfcac2', style: 'bun', glasses: true, skirt: '#4e5a6e' };
+const JANITOR = { b: ADULT, skin: '#d8a47e', hair: '#3a2a20', style: 'crew', shirt: '#6f7a6a', sleeve: 'long', pants: '#5f6a5a', shoes: '#2a2018' };
+const TVMAN = { b: ADULT, skin: '#c8c8c0', hair: '#4a4a48', style: 'crew', shirt: '#5a5a58', sleeve: 'long', pants: '#4a4a48', shoes: '#2a2a2a', glasses: true };
+const DANNY = { b: KID, skin: '#f2cfae', hair: '#c49a5c', style: 'crew', shirt: '#c8503e', stripes: '#f4ead8', sleeve: 'short', pants: '#4a5878', shoes: '#4a3424', freckles: true };
+const CLASS62 = [
+  { b: KID, skin: '#f0c8a6', hair: '#4a3020', style: 'bob', shirt: '#e3c35c', sleeve: 'short', skirt: '#e3c35c', legs: '#f0c8a6', shoes: '#5a3a2a' },
+  { b: KID, skin: '#8a5a3c', hair: '#1e1612', style: 'puffs', shirt: '#e29aa8', sleeve: 'short', skirt: '#e29aa8', legs: '#8a5a3c', shoes: '#3a2a22' },
+  { b: KID, skin: '#f0c8a0', hair: '#2a1c14', style: 'crew', shirt: '#5a7ab0', sleeve: 'long', pants: '#6a5a4a', shoes: '#3a2a22' },
+  { b: KID, skin: '#f3d3b4', hair: '#e2c070', style: 'pony', shirt: '#f2efe6', sleeve: 'short', skirt: '#5f8a5c', legs: '#f3d3b4', shoes: '#3a2a22' },
+  { b: KID, skin: '#6a4430', hair: '#141010', style: 'crew', shirt: '#d0a040', sleeve: 'short', pants: '#4a4a5a', shoes: '#2a2018' },
+];
+const LINDA = { b: KID, skin: '#f0caa8', hair: '#6a4024', style: 'long', shirt: '#d07a34', stripes: '#7a4a24', sleeve: 'long', pants: '#4f6a96', shoes: '#7a5232' };
+const KEVIN = { b: KID, skin: '#f3d2b2', hair: '#e0c27a', style: 'bowl', shirt: '#c83e32', sleeve: 'short', pants: '#6a5a3a', shoes: '#4a3424' };
+const MOM75 = { b: ADULT, skin: '#efc9a6', hair: '#7a4a26', style: 'shag', shirt: '#c26a72', sleeve: 'long', pants: '#6e5038', shoes: '#4a3020' };
+const LINDA04 = { b: ADULT, skin: '#efc9a6', hair: '#6a4024', style: 'long', shirt: '#8a5a86', sleeve: 'long', pants: '#3e4a60', shoes: '#3a2a22' };
+const MAX = { b: KID, skin: '#f0caa8', hair: '#5a3a22', style: 'shag', shirt: '#4a6a9a', sleeve: 'long', pants: '#5a5e6a', shoes: '#e8e4dc', hood: true };
+const KIDS88 = [
+  { b: KID, skin: '#c8906a', hair: '#2a1a12', style: 'pony', shirt: '#e05a8a', sleeve: 'long', pants: '#3a4a7a', shoes: '#f2f2f2' },
+  { b: KID, skin: '#f0c8a6', hair: '#c49050', style: 'crew', shirt: '#2fa0a0', sleeve: 'short', pants: '#3a3a4a', shoes: '#f2f2f2' },
+  { b: KID, skin: '#6a4430', hair: '#141010', style: 'crew', shirt: '#f0c040', sleeve: 'short', pants: '#4a4a5a', shoes: '#f2f2f2' },
+  { b: KID, skin: '#f3d3b4', hair: '#8a4a2a', style: 'long', shirt: '#8a6ac0', sleeve: 'long', pants: '#3a4a7a', shoes: '#f2f2f2' },
+  { b: KID, skin: '#e8b890', hair: '#1e1612', style: 'bob', shirt: '#3a8a5a', sleeve: 'short', pants: '#2a3a5a', shoes: '#f2f2f2' },
+  { b: KID, skin: '#f0caa8', hair: '#5a3a22', style: 'crew', shirt: '#e86a3a', stripes: '#2a4a8a', sleeve: 'short', pants: '#3a3a4a', shoes: '#f2f2f2' },
+];
+const ROSA = KIDS88[0], TOMMY = KIDS88[5];
+const REYES = { b: ADULT, skin: '#c08a62', hair: '#1e1612', style: 'pony', shirt: '#d8a03a', sleeve: 'long', pants: '#3a3a4a', shoes: '#5a3a2a' };
+const JUNE = { b: KID, skin: '#7a4a30', hair: '#141010', style: 'puffs', shirt: '#3fa0a0', sleeve: 'short', skirt: '#3fa0a0', legs: '#7a4a30', shoes: '#e8c040' };
+const KIDS26 = [
+  { b: KID, skin: '#f0c8a6', hair: '#c46a3a', style: 'bob', shirt: '#e86a6a', sleeve: 'long', pants: '#4a5a8a', shoes: '#f2f2f2' },
+  { b: KID, skin: '#d8a47e', hair: '#1e1612', style: 'crew', shirt: '#6aa0e0', sleeve: 'short', pants: '#3a3a4a', shoes: '#f2f2f2' },
+  { b: KID, skin: '#e8c4a0', hair: '#2a1c14', style: 'pony', shirt: '#9ac05a', sleeve: 'long', pants: '#5a4a6a', shoes: '#f2f2f2' },
+  { b: KID, skin: '#a06a48', hair: '#141010', style: 'crew', shirt: '#f0b040', sleeve: 'short', pants: '#3a4a5a', shoes: '#f2f2f2' },
+];
+
+// ---------- screens ----------
+// Draw into a screen's glass: fn(w, h) draws in local coordinates; the glass is added on top.
+function screen(x, y, w, h, rad, fn, o = {}) {
+  ctx.save();
+  ctx.beginPath(); ctx.roundRect(x, y, w, h, rad); ctx.clip();
+  ctx.translate(x, y); fn(w, h);
+  if (o.crt) {
+    ctx.fillStyle = 'rgba(0,0,0,.12)'; for (let yy = 0; yy < h; yy += 3) ctx.fillRect(0, yy, w, 1.2);
+    const g = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * .3, w / 2, h / 2, Math.max(w, h) * .75);
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.45)'); ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  }
+  const s = ctx.createLinearGradient(0, 0, w * .6, h);
+  s.addColorStop(0, 'rgba(255,255,255,.16)'); s.addColorStop(.35, 'rgba(255,255,255,0)'); ctx.fillStyle = s; ctx.fillRect(0, 0, w, h);
+  ctx.restore();
+  ctx.save(); ctx.strokeStyle = INK; ctx.lineWidth = 2; ctx.beginPath(); ctx.roundRect(x, y, w, h, rad); ctx.stroke(); ctx.restore();
+}
+function glow(x, y, r, col, a) {
+  ctx.save(); const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.globalAlpha = a; ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2); ctx.restore();
+}
+// The 1962 broadcast: a teacher in a studio, chalking problems on a board, in grey.
+function lesson62(w, h, u, lines, o = {}) {
+  ctx.fillStyle = '#8e8e88'; ctx.fillRect(0, 0, w, h);
+  const k = w / 300;
+  ctx.fillStyle = '#3e3e3c'; ctx.fillRect(14 * k, 18 * k, 200 * k, 150 * k);
+  ctx.strokeStyle = '#6a6a66'; ctx.lineWidth = 4 * k; ctx.strokeRect(14 * k, 18 * k, 200 * k, 150 * k);
+  lines.forEach(([t0, s], i) => written(s, 30 * k, (58 + i * 42) * k, `${30 * k}px ${CHALK}`, '#e8e8e2', seg(u, t0, t0 + 1.2)));
+  const writing = lines.some(([t0]) => within(u, t0, t0 + 1.2));
+  const reach = writing ? [-50 + Math.sin(u * 14) * 4, -20 + Math.cos(u * 11) * 3] : (o.point ? [-46, -14] : [10, 70]);
+  person({ ...TVMAN, x: 255 * k, y: h - 50 * k, s: k * .95, d: -1, lean: writing ? .12 : 0, tilt: writing ? 0 : .05, turn: writing ? 0 : .7, hands: [reach, [6, 70]], feet: [[6, 98], [-6, 98]], mouth: 'talk', t: u, id: 900 });
+  if (o.snow) { const r = R(BOIL); ctx.fillStyle = 'rgba(255,255,255,.5)'; for (let i = 0; i < 300; i++) ctx.fillRect(r() * w, r() * h, 2, 1); }
+  ctx.fillStyle = `rgba(255,255,255,${.04 + .03 * Math.sin(u * 40)})`; ctx.fillRect(0, 0, w, h);
+}
+function testPattern(w, h) {
+  ctx.fillStyle = '#7a7a76'; ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = '#e8e8e2'; ctx.lineWidth = w / 80;
+  for (const rr of [.4, .3]) { ctx.beginPath(); ctx.arc(w / 2, h / 2, h * rr, 0, 7); ctx.stroke(); }
+  ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.moveTo(w / 2, 0); ctx.lineTo(w / 2, h); ctx.stroke();
+  for (let i = 0; i < 6; i++) { ctx.fillStyle = `rgb(${60 + i * 36},${60 + i * 36},${58 + i * 36})`; ctx.fillRect(w * (.25 + i * .085), h * .7, w * .085, h * .1); }
+  text('MPATI · CH 72', w / 2, h * .2, `bold ${h * .1}px ${SANS}`, '#f0f0ea');
+}
+
+// ---------- Room 4 ----------
+// The same front wall in every era: blackboard (or what replaced it), the clock, the window and
+// its tree, and the closet door. The tree is planted in 1962 and keeps growing.
+const ERA62 = { k: 62, wall: '#cdd5b8', low: '#8fa68c', floor: '#9a7350', trim: '#6e5638', sky: ['#a9c6dc', '#e9eedf'], tree: .12, leaf: ['#6f9a4a', '#8fb25a', '#4f7a3a'] };
+const ERA88 = { k: 88, wall: '#e0d6c4', low: '#bba88c', floor: '#6c8790', trim: '#8a7a64', sky: ['#9cc0de', '#e8eef0'], tree: .5, leaf: ['#5f8f44', '#7fa850', '#46703a'] };
+const ERA26 = { k: 26, wall: '#efe9dd', low: '#d9cdb9', floor: '#c9a878', trim: '#a08a6c', sky: ['#8fb8e0', '#f2ecdc'], tree: 1, leaf: ['#d88a2e', '#e8b040', '#b8602a'] };
+function wallClock(x, y, r, hrs, id = 70) {
+  ink(ellPts([x, y], r + 4, r + 4, 18), { fill: '#3a302a', w: 2, still: true, id });
+  ink(ellPts([x, y], r, r, 18), { fill: '#f6f2e6', w: 1.5, still: true, id: id + 1 });
+  ctx.strokeStyle = INK; ctx.lineCap = 'round';
+  for (let i = 0; i < 12; i++) { const a = i / 12 * Math.PI * 2; ctx.lineWidth = i % 3 ? 1.2 : 2.4; ctx.beginPath(); ctx.moveTo(x + Math.cos(a) * r * .78, y + Math.sin(a) * r * .78); ctx.lineTo(x + Math.cos(a) * r * .92, y + Math.sin(a) * r * .92); ctx.stroke(); }
+  const ha = (hrs % 12) / 12 * Math.PI * 2 - Math.PI / 2, ma = frac(hrs) * Math.PI * 2 - Math.PI / 2;
+  ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(ha) * r * .5, y + Math.sin(ha) * r * .5); ctx.stroke();
+  ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(ma) * r * .78, y + Math.sin(ma) * r * .78); ctx.stroke();
+}
+function tree(E, x, y, g, u, seed) {
+  const r = R(seed), h = 60 + g * 300, cr = 34 + g * 190;
+  ink([[x - 4 - g * 22, y], [x - 2 - g * 10, y - h * .7], [x + 2 + g * 10, y - h * .7], [x + 4 + g * 22, y]], { fill: '#6a5040', w: 1.6, still: true, id: seed });
+  if (g > .3) { ink([[x - 5, y - h * .55], [x - cr * .45, y - h * .9]], { w: 6 + g * 8, stroke: '#6a5040', still: true, id: seed + 1 }); ink([[x + 5, y - h * .5], [x + cr * .5, y - h * .85]], { w: 5 + g * 8, stroke: '#6a5040', still: true, id: seed + 2 }); }
+  for (let i = 0; i < 22; i++) {
+    const a = r() * Math.PI * 2, d = Math.sqrt(r()) * cr * .75, cx = x + Math.cos(a) * d * 1.15, cy = y - h * .82 + Math.sin(a) * d * .8;
+    const sw = Math.sin(u * 1.3 + i) * 1.5;
+    ink(ellPts([cx + sw, cy], cr * (.28 + r() * .2), cr * (.22 + r() * .16), 10), { fill: E.leaf[i % 3], stroke: false, still: true, id: seed + 10 + i });
+  }
+}
+function windowView(E, x, y, w, h, u, o = {}) {
+  ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  const g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, E.sky[0]); g.addColorStop(1, E.sky[1]);
+  ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+  // far houses and the playground fence
+  const r = R(E.k);
+  for (let i = 0; i < 6; i++) { const hx = x - 20 + i * 70 + r() * 20, hh = 30 + r() * 30; box(hx, y + h - 40 - hh, 54, hh + 40, { fill: mixC(E.sky[1], '#8a8a80', .35), stroke: false, id: E.k + i }); ink([[hx - 6, y + h - 40 - hh], [hx + 27, y + h - 66 - hh], [hx + 60, y + h - 40 - hh]], { fill: mixC(E.sky[1], '#6a5a50', .4), stroke: false, still: true, id: E.k + 10 + i }); }
+  ctx.fillStyle = mixC(E.sky[1], '#7a9a5a', .5); ctx.fillRect(x, y + h - 26, w, 26);
+  tree(E, x + w * .55, y + h + 6, E.tree, u, 4000 + E.k);
+  if (o.plane) o.plane();
+  ctx.restore();
+  // frame and mullions
+  ctx.strokeStyle = E.trim; ctx.lineWidth = 10; ctx.strokeRect(x, y, w, h);
+  ctx.lineWidth = 6; for (let i = 1; i < 3; i++) { ctx.beginPath(); ctx.moveTo(x + w * i / 3, y); ctx.lineTo(x + w * i / 3, y + h); ctx.stroke(); }
+  ctx.beginPath(); ctx.moveTo(x, y + h * .55); ctx.lineTo(x + w, y + h * .55); ctx.stroke();
+  box(x - 14, y + h, w + 28, 12, { fill: shade(E.trim, .15), id: 77 });
+}
+function closetDoor(E, x, y, w, h, open, inside) {
+  box(x - 8, y - 8, w + 16, h + 8, { fill: E.trim, id: 80 });
+  // the closet's inside: dark, with shelves
+  box(x, y, w, h, { fill: '#3e342c', id: 81 });
+  for (const sy of [y + h * .3, y + h * .55, y + h * .8]) box(x, sy, w, 7, { fill: '#7a6450', id: 82 + sy });
+  if (inside) inside(x, y, w, h);
+  const a = open * Math.PI * .45, dw = w * Math.cos(a), grow = Math.sin(a) * 26;
+  const doorCol = E.k === 26 ? '#7aa0b0' : E.k === 88 ? '#a08a6a' : '#8a6a48';
+  ink([[x, y - grow * .4], [x + dw, y], [x + dw, y + h], [x, y + h + grow * .3]], { fill: doorCol, sharp: true, w: 2, still: true, id: 84 });
+  if (dw > 20) {
+    box(x + dw * .15, y + h * .08, dw * .7, h * .36, { fill: false, stroke: shade(doorCol, -.25), w: 2, id: 85 });
+    box(x + dw * .15, y + h * .52, dw * .7, h * .4, { fill: false, stroke: shade(doorCol, -.25), w: 2, id: 86 });
+    ink(ellPts([x + dw * .86, y + h * .52], 6, 6, 8), { fill: '#d0b050', w: 1.4, still: true, id: 87 });
+  }
+}
+// The box of arithmetic books, packed away in 1962.
+function bookBox(x, y, w, h, o = {}) {
+  const c = o.dusty ? '#a89070' : '#c4a274', fl = o.flaps ?? 0;
+  if (fl < 1) {
+    const up = 1 - fl;
+    ink([[x - w / 2, y - h], [x - w / 2 - up * w * .18, y - h - up * h * .45], [x - w * .05, y - h - up * h * .5], [x, y - h]], { fill: shade(c, -.08), w: 1.6, id: 700, still: o.still });
+    ink([[x + w / 2, y - h], [x + w / 2 + up * w * .18, y - h - up * h * .45], [x + w * .05, y - h - up * h * .5], [x, y - h]], { fill: shade(c, -.12), w: 1.6, id: 701, still: o.still });
+    if (o.books) for (let i = 0; i < 4; i++) box(x - w * .42 + i * w * .21, y - h - 10, w * .19, 14, { fill: ['#3f6a4a', '#4a7a56', '#3a5e44', '#46704f'][i], id: 702 + i });
+  }
+  box(x - w / 2, y - h, w, h, { fill: c, id: 708, w: 2 });
+  if (fl >= 1) ink([[x - w / 2, y - h], [x + w / 2, y - h]], { w: 3, stroke: shade(c, -.3), still: true, id: 709 });
+  if (o.label) {
+    ctx.save(); ctx.translate(x, y - h * .5); ctx.rotate(-.04);
+    written('ROOM 4 – KEEP', 0, 0, `bold ${w * .13}px ${HAND}`, '#2a3a8a', o.label, 'center');
+    written('E. Halloran, 1962', 0, w * .14, `${w * .09}px ${HAND}`, '#2a3a8a', (o.label - .6) / .4, 'center');
+    ctx.restore();
+  }
+  if (o.dusty) { ctx.fillStyle = 'rgba(230,225,215,.35)'; ctx.fillRect(x - w / 2, y - h, w, 6); }
+}
+function room4(E, u, o = {}) {
+  ctx.fillStyle = E.wall; ctx.fillRect(-700, -500, W + 1400, 1000);
+  dabs(-700, -500, W + 1400, 1000, shade(E.wall, -.08), 70, E.k * 3, 40, 140, .18);
+  ctx.fillStyle = E.low; ctx.fillRect(-700, 440, W + 1400, 125);
+  ink([[-700, 440], [W + 700, 440]], { w: 4, stroke: E.trim, still: true, id: 60 });
+  // floor
+  const fg = ctx.createLinearGradient(0, 560, 0, 900); fg.addColorStop(0, shade(E.floor, -.12)); fg.addColorStop(1, E.floor);
+  ctx.fillStyle = fg; ctx.fillRect(-700, 560, W + 1400, 600);
+  if (E.k !== 88) { ctx.strokeStyle = 'rgba(40,25,10,.18)'; ctx.lineWidth = 1.5; for (let i = 0; i < 9; i++) { const yy = 560 + i * i * 6 + i * 8; ctx.beginPath(); ctx.moveTo(-700, yy); ctx.lineTo(W + 700, yy); ctx.stroke(); } }
+  else dabs(-700, 560, W + 1400, 600, shade(E.floor, -.15), 120, 88, 3, 8, .25);
+  box(-700, 552, W + 1400, 12, { fill: E.trim, id: 61 });
+  wallClock(330, 92, 30, o.time || 9.25);
+  windowView(E, 660, 120, 320, 310, u, o);
+  closetDoor(E, 1030, 150, 140, 405, o.door || 0, o.inside);
+  if (E.k === 62) {
+    box(80, 150, 520, 235, { fill: '#3b4f43', w: 2.5, id: 62 });
+    dabs(84, 154, 512, 227, '#55695c', 40, 63, 20, 70, .3);
+    box(70, 140, 540, 255, { fill: false, stroke: E.trim, w: 9, id: 64 });
+    box(76, 386, 528, 9, { fill: shade(E.trim, .1), id: 65 });
+    written(o.board || 'Sept. 10, 1962', 110, 196, `28px ${CHALK}`, 'rgba(235,235,225,.85)', 1);
+    // the flag in the corner
+    ink([[40, 70], [40, 260]], { w: 3, stroke: '#8a7a5a', still: true, id: 66 });
+    for (let i = 0; i < 7; i++) box(42, 76 + i * 9, 62, 9, { fill: i % 2 ? '#f4efe4' : '#b8423a', stroke: false, id: 67 + i });
+    box(42, 76, 26, 36, { fill: '#3a4a7a', stroke: false, id: 74 });
+  }
+  if (E.k === 26) {
+    box(70, 140, 540, 270, { fill: '#2a2e36', w: 3, id: 62 });
+    screen(80, 150, 520, 250, 4, (w, h) => wall26(w, h, u));
+  }
+}
+// The wall screen of 2026: a slow, bright map of the sky.
+function wall26(w, h, u) {
+  const g = ctx.createLinearGradient(0, 0, 0, h); g.addColorStop(0, '#1d2f5a'); g.addColorStop(1, '#3a6aa0'); ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  const r = R(26); ctx.fillStyle = '#fff'; for (let i = 0; i < 60; i++) { ctx.globalAlpha = .4 + r() * .6; ctx.fillRect(r() * w, r() * h, 2, 2); } ctx.globalAlpha = 1;
+  const cx = w * .5, cy = h * .55;
+  ink(ellPts([cx, cy], 34, 34, 16), { fill: '#f2c040', stroke: false, still: true, id: 2601 });
+  for (const [rr, sp, col, pr] of [[70, .5, '#c8c0b0', 6], [110, .3, '#6aa0e0', 9], [150, .2, '#d86a4a', 8], [210, .12, '#e0b080', 16]]) {
+    ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.ellipse(cx, cy, rr, rr * .38, 0, 0, 7); ctx.stroke();
+    const a = u * sp + rr; ink(ellPts([cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * .38], pr, pr, 10), { fill: col, stroke: false, id: 2602 + rr });
+  }
+  text('THE SOLAR SYSTEM · 3rd grade · lesson 14 of 40', 14, 22, `14px ${SANS}`, 'rgba(255,255,255,.8)', 'left');
+}
+// A slant of sunlight from the window onto the floor.
+function sunbeam(a = .12) {
+  ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = '#fff6d8';
+  ctx.beginPath(); ctx.moveTo(660, 430); ctx.lineTo(980, 430); ctx.lineTo(820, 760); ctx.lineTo(380, 760); ctx.closePath(); ctx.fill(); ctx.restore();
+}
+
+// ---------- furniture ----------
+// The 1962 television on its tall cart. x, y is the floor between the casters.
+function tvCart(x, y, s, content, id = 500) {
+  const P = (lx, ly) => [x + lx * s, y + ly * s];
+  for (const lx of [-70, 70]) { ink([P(lx, -6), P(lx, -200)], { w: 4 * s, stroke: '#5a5a60', id: id + lx }); ink(ellPts(P(lx, -3), 6 * s, 6 * s, 8), { fill: '#2a2a2a', w: 1, id: id + lx + 1 }); }
+  box(...P(-80, -100), 160 * s, 8 * s, { fill: '#7a7a82', id: id + 2 });
+  box(...P(-80, -206), 160 * s, 8 * s, { fill: '#7a7a82', id: id + 3 });
+  box(...P(-78, -330), 156 * s, 126 * s, { fill: '#6b4a30', w: 2.2, id: id + 4 });
+  ink([P(-30, -330), P(-60, -400)], { w: 2 * s, stroke: '#8a8a8a', id: id + 5 }); ink([P(30, -330), P(55, -404)], { w: 2 * s, stroke: '#8a8a8a', id: id + 6 });
+  ink(ellPts(P(0, -332), 16 * s, 6 * s, 8), { fill: '#3a3a3a', w: 1.2, id: id + 7 });
+  for (const ly of [-300, -268]) ink(ellPts(P(62, ly), 6 * s, 6 * s, 8), { fill: '#d8c8a8', w: 1.2, id: id + ly });
+  const sr = [...P(-68, -320), 116 * s, 104 * s];
+  screen(...sr, 14 * s, content, { crt: true });
+  return sr;
+}
+// A 1962 school desk with its chair, for a child seated at hip (x, y) facing d.
+function desk62(x, y, s, d, id) {
+  const P = (lx, ly) => [x + d * lx * s, y + ly * s];
+  ink([P(-14, -50), P(-16, 4)], { w: 4 * s, stroke: '#5a5a60', id: id });
+  box(Math.min(P(-22, -54)[0], P(-8, -54)[0]), P(0, -54)[1], 14 * s, 26 * s, { fill: '#a07a4c', id: id + 1 });
+  box(Math.min(P(-20, 4)[0], P(14, 4)[0]), P(0, 4)[1], 34 * s, 6 * s, { fill: '#a07a4c', id: id + 2 });
+  for (const lx of [-14, 10]) ink([P(lx, 10), P(lx, 36)], { w: 3 * s, stroke: '#5a5a60', id: id + 3 + lx });
+  for (const lx of [40, 70]) ink([P(lx, -16), P(lx, 36)], { w: 3 * s, stroke: '#5a5a60', id: id + 30 + lx });
+  ink([P(28, -26), P(82, -30), P(82, -22), P(28, -18)], { fill: '#b08a58', sharp: true, w: 2, id: id + 6 });
+  ink([P(30, -16), P(80, -16), P(80, -4), P(30, -4)], { fill: '#8a6a44', sharp: true, w: 1.6, id: id + 7 });
+}
+function kidAtDesk62(C, x, y, s, d, o = {}) {
+  desk62(x, y, s, d, (o.id || 100) + 400);
+  return person({ ...C, x, y, s, d, lean: .08, feet: SEAT_FEET(KID), hands: o.hands || [[36, 26], [30, 30]], ...o });
+}
+
+// ---------- shots ----------
+// Year cards: the date painted in the corner as each vignette begins.
+function yearCard(u, yr, sub, col = '#fbf4e2') {
+  const a = Math.min(ease(seg(u, .3, 1.2)), 1 - ease(seg(u, 5, 6.2)));
+  if (a <= 0) return;
+  ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = 'rgba(25,18,12,.42)'; ctx.beginPath(); ctx.roundRect(40, 40, 260, 124, 10); ctx.fill();
+  ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = 10;
+  text(yr, 60, 112, `italic 78px ${SERIF}`, col, 'left');
+  text(sub, 64, 146, `italic 24px ${SERIF}`, col, 'left');
+  ctx.restore();
+}
+
+// The MPATI airplane: a DC-6 with its broadcasting mast lowered beneath it.
+function plane(x, y, s, d, u, id = 30) {
+  const P = (lx, ly) => [x + d * lx * s, y + ly * s];
+  ink([P(-4, 6), P(0, 70)], { w: 1.6 * s, stroke: '#4a4a50', id: id });
+  ink([P(-60, -2), P(-40, -8), P(50, -8), P(64, -2), P(50, 6), P(-40, 6)], { fill: '#d8dad8', w: 1.6, id: id + 1 });
+  ink([P(-58, -2), P(-66, -22), P(-52, -22), P(-42, -6)], { fill: '#c0c2c0', w: 1.4, id: id + 2 });
+  ink([P(-6, 0), P(14, 0), P(24, 4), P(-12, 4)], { fill: '#a8aaa8', w: 1.4, id: id + 3 });
+  ink([P(-40, 0), P(52, 0)], { w: 1.2 * s, stroke: '#3a6aa0', id: id + 4 });
+  for (const lx of [-2, 12]) { ctx.fillStyle = 'rgba(80,80,80,.35)'; const c = P(lx + 14, 2); ctx.beginPath(); ctx.ellipse(c[0], c[1], 1.5 * s, 7 * s, 0, 0, 7); ctx.fill(); }
+  return P(0, 70);
+}
+function rings(x, y, u, period, maxR, col = '255,255,255') {
+  ctx.save();
+  for (let i = 0; i < 4; i++) {
+    const f = frac(u / period + i / 4);
+    ctx.strokeStyle = `rgba(${col},${.5 * (1 - f)})`; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x, y, 6 + f * maxR, 0, 7); ctx.stroke();
+  }
+  ctx.restore();
+}
+function corn(seed, n, x0, x1, y0, y1, h0, h1, u, col) {
+  const r = R(seed); ctx.save(); ctx.lineCap = 'round';
+  for (let i = 0; i < n; i++) {
+    const x = lerp(x0, x1, r()), f = r(), y = lerp(y0, y1, f), hh = lerp(h0, h1, f), sw = Math.sin(u * 1.4 + x * .01) * hh * .03;
+    ctx.strokeStyle = col[i % col.length]; ctx.lineWidth = 1 + f * 3;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + sw, y - hh); ctx.stroke();
+    for (let k = 1; k < 4; k++) { const ly = y - hh * k / 4, sg = k % 2 ? 1 : -1; ctx.beginPath(); ctx.moveTo(x + sw * k / 4, ly); ctx.quadraticCurveTo(x + sg * hh * .18, ly - hh * .1, x + sg * hh * .3 + sw, ly + hh * .05); ctx.stroke(); }
+  }
+  ctx.restore();
+}
+function school62(x, y, s) {
+  const P = (lx, ly) => [x + lx * s, y + ly * s];
+  box(...P(-260, -120), 520 * s, 120 * s, { fill: '#a8584a', w: 2, id: 40 });
+  dabs(...P(-260, -120), 520 * s, 120 * s, '#8a4a3c', 60, 41, 4, 10, .4);
+  box(...P(-270, -132), 540 * s, 14 * s, { fill: '#d8d0c0', id: 42 });
+  for (let i = 0; i < 8; i++) { if (i === 4) continue; box(...P(-236 + i * 60, -96), 40 * s, 52 * s, { fill: '#cfe0e8', w: 1.5, id: 43 + i }); }
+  box(...P(-6, -86), 40 * s, 86 * s, { fill: '#6a4a34', id: 52 });
+  box(...P(-30, -126), 88 * s, 18 * s, { fill: '#e8e0d0', id: 53 });
+  text('MAPLE STREET SCHOOL', P(14, -113)[0], P(0, -113)[1], `bold ${7 * s}px ${SERIF}`, '#4a3a30');
+  // the antenna on the roof
+  ink([P(150, -132), P(150, -220)], { w: 2 * s, stroke: '#4a4a4a', id: 54 });
+  for (const [ly, lw] of [[-210, 26], [-196, 34], [-182, 42]]) ink([P(150 - lw / 2, ly), P(150 + lw / 2, ly)], { w: 1.6 * s, stroke: '#4a4a4a', id: 55 + ly });
+  // the flag
+  ink([P(-330, 0), P(-330, -200)], { w: 2 * s, stroke: '#9a9a9a', id: 58 });
+  return P(150, -214);
+}
+
+function sky62(u) {
+  const g = ctx.createLinearGradient(0, -200, 0, 470); g.addColorStop(0, '#8fb4d4'); g.addColorStop(1, '#f2ead2');
+  ctx.fillStyle = g; ctx.fillRect(-800, -600, W + 1600, 1100);
+  const r = R(7); ctx.fillStyle = '#fff';
+  for (let i = 0; i < 9; i++) { const x = -500 + r() * (W + 1000) + u * 3, y = 40 + r() * 220, w = 90 + r() * 140; ctx.globalAlpha = .5; for (let k = 0; k < 5; k++) { ctx.beginPath(); ctx.ellipse(x + (k - 2) * w * .22, y, w * .3, w * .08, 0, 0, 7); ctx.fill(); } }
+  ctx.globalAlpha = 1;
+}
+function fields62(u, hz) {
+  ctx.fillStyle = '#9aa86a'; ctx.fillRect(-800, hz - 6, W + 1600, 20);
+  // tree lines and a water tower on the horizon
+  dabs(-800, hz - 26, W + 1600, 26, '#6a7a4a', 60, 9, 14, 40, .8);
+  ink([[1040, hz - 8], [1046, hz - 60], [1076, hz - 60], [1082, hz - 8]], { w: 2, stroke: '#7a7a72', still: true, id: 10 });
+  ink(ellPts([1061, hz - 72], 24, 14, 12), { fill: '#b8b8b0', w: 1.6, still: true, id: 11 });
+  const g = ctx.createLinearGradient(0, hz, 0, H + 100); g.addColorStop(0, '#c8b870'); g.addColorStop(1, '#8a8a3a');
+  ctx.fillStyle = g; ctx.fillRect(-800, hz + 8, W + 1600, 800);
+  ctx.strokeStyle = 'rgba(80,90,30,.35)'; ctx.lineWidth = 2;
+  for (let i = -30; i < 30; i++) { ctx.beginPath(); ctx.moveTo(W / 2 + i * 12, hz + 8); ctx.lineTo(W / 2 + i * 140, H + 300); ctx.stroke(); }
+}
+
+// S01 — Title: Indiana, 1962. A plane circles over the fields.
+function planePos(u) { const a = u * .16 + 2.2; return [640 + Math.cos(a) * 520, 150 + Math.sin(a) * 50, Math.sin(a) > 0 ? -1 : 1]; }
+function shotTitle(u) {
+  CAM = { x: 640, y: 360, z: 1 };
+  const hz = 470;
+  layer(.05, () => sky62(u));
+  layer(.1, () => { const [px, py, pd] = planePos(u); const m = plane(px, py, .8, -1, u); rings(m[0], m[1], u, 2.2, 260); void pd; });
+  layer(.3, () => fields62(u, hz));
+  layer(.5, () => school62(780, hz + 40, .7));
+  layer(1.4, () => corn(12, 70, -300, W + 300, 700, 820, 140, 260, u, ['#7a8a3a', '#9aa04a', '#6a7a2a']));
+  const a = ease(seg(u, .6, 2.2));
+  ctx.save(); ctx.globalAlpha = a; ctx.shadowColor = 'rgba(255,250,235,.8)'; ctx.shadowBlur = 16;
+  text('Room 4', W / 2, 250, `80px ${SERIF}`, '#2e2a22');
+  ctx.globalAlpha = ease(seg(u, 1.8, 3.4));
+  text('an alternate history of the American classroom, 1962–2026', W / 2, 300, `italic 26px ${SERIF}`, '#4a3e30');
+  ctx.restore();
+}
+// S02 — The plane passes over the school; the antenna on the roof takes the lesson in.
+function shotPlane(u) {
+  CAM = { x: K(u, [[0, 640], [12, 800]]), y: K(u, [[0, 360], [12, 400]]), z: K(u, [[0, 1], [12, 1.5]]) };
+  const hz = 470;
+  layer(.05, () => sky62(u + 7));
+  layer(.12, () => { const px = K(u, [[0, -100], [12, 1300]], x => x), m = plane(px, 120 - Math.sin(u * .3) * 10, 1.1, 1, u); rings(m[0], m[1], u, 2.2, 340); });
+  layer(.3, () => fields62(u, hz));
+  layer(.5, () => { const ant = school62(780, hz + 40, .7); if (u > 3) rings(ant[0], ant[1], u, 1.4, 40, '255,240,180'); });
+  layer(1.4, () => corn(13, 70, -300, W + 300, 700, 820, 140, 260, u, ['#7a8a3a', '#9aa04a', '#6a7a2a']));
+  yearCard(u, '1962', 'Indiana');
+}
+
+// S03 — Miss Halloran packs the arithmetic books away; the janitor wheels in a television.
+function shotPacking(u) {
+  CAM = { x: K(u, [[0, 700], [6, 700], [11, 640]]), y: 390, z: K(u, [[0, 1.12], [12, 1.06]]) };
+  const q = twos(u), E = ERA62, s = 1.3, floor = 630, standY = floor - 98 * s;
+  // K01 at the desk · K02 last book in · K03 flaps · K04 label · K05 crouch and lift · walk · K06 shelf · door
+  const walkT = seg(u, 5.8, 9.2), hx = lerp(720, 1000, ease(walkT)), carrying = u > 4.9;
+  const carryY = standY + 28;
+  const boxP = u < 4.9 ? [600, 478] : u < 5.8 ? mix([600, 478], [720 + 40, carryY], ease(seg(u, 4.9, 5.7))) : u < 9.2 ? [hx + 40, carryY] : mix([1040, carryY], [1100, 378], ease(seg(u, 9.2, 10)));
+  const doorOpen = K(u, [[0, .55], [10.2, .55], [11, 0]]);
+  layer(.8, () => room4(E, u, { door: doorOpen, inside: (x, y, w, h) => { if (u > 10) bookBox(x + 70, y + h * .55, 100, 70, { flaps: 1, label: 1, still: true }); } }));
+  layer(1, () => {
+    // the teacher's desk
+    box(420, 480, 240, 14, { fill: '#9a6a40', id: 300 });
+    box(430, 494, 220, 130, { fill: '#7a5232', id: 301 });
+    // the books, one by one into the box
+    const left = 4 - Math.floor(seg(u, .2, 1.9) * 4.01);
+    for (let i = 0; i < left; i++) box(462, 466 - i * 13, 70, 13, { fill: ['#3f6a4a', '#4a7a56', '#3a5e44', '#46704f'][i], id: 310 + i });
+    if (!carrying) bookBox(boxP[0], boxP[1], 100, 70, { flaps: seg(u, 2, 3), books: u < 2.2, label: seg(u, 3.1, 4.5) });
+    // the janitor pushes the television in from the left, and plugs it in
+    const jx = K(u, [[0, -420], [6, -420], [11.2, 140]], easeOut);
+    if (jx > -400) {
+      const w = walk(jx + 420, ADULT, 34, 8), cartX = jx + 160, moving = u < 11.2;
+      tvCart(cartX, floor - 8, 1.05, (w2, h2) => { if (u > 12) testPattern(w2, h2); else { ctx.fillStyle = u > 11.6 ? '#9a9a96' : '#3a3e3a'; ctx.fillRect(0, 0, w2, h2); } });
+      person({ ...JANITOR, x: jx, y: standY + (moving ? w.bob * s : 0), s, d: 1, lean: moving ? .14 : 0, feet: moving ? w.feet : null,
+        handsAbs: u < 11.4 ? [[cartX - 78, floor - 226], [cartX - 80, floor - 222]] : null, mouth: u > 12 ? 'smile' : 'flat', t: q, id: 200, turn: u > 11.8 ? .5 : 0 });
+    }
+    // Miss Halloran
+    const w = walk(Math.max(0, hx - 720), ADULT, 36, 9);
+    let pose;
+    if (u < 4.6) {
+      const r1 = frac(u / .42), reach = u < 1.9 ? (r1 < .5 ? [-52, 50] : [-30, 32]) : u < 3 ? [-30, 34 - Math.sin(u * 9) * 6] : [-34, 38 + Math.sin(u * 12) * 3];
+      pose = { x: 720, y: standY, lean: u > 3 ? .3 : .16, tilt: .3, hands: [reach, [-14, 58]], mouth: u > 3 ? 'smile' : 'flat' };
+    } else if (u < 5.8) {
+      const c = Math.sin(seg(u, 4.6, 5.8) * Math.PI);
+      pose = { x: 720, y: standY + c * 20, lean: .32 - seg(u, 5.2, 5.8) * .3, tilt: .1, handsAbs: [[boxP[0] - 46, boxP[1] - 44], [boxP[0] + 46, boxP[1] - 44]], mouth: 'o' };
+    } else {
+      pose = { x: hx, y: standY + w.bob * s, lean: -.08, feet: u < 9.2 ? w.feet : null, handsAbs: [[boxP[0] + 46, boxP[1] - 42], [boxP[0] - 40, boxP[1] - 46]], mouth: 'flat' };
+    }
+    const d = u < 5.7 ? -1 : 1;
+    if (d === -1 && carrying) pose.handsAbs = [[boxP[0] - 46, boxP[1] - 44], [boxP[0] + 46, boxP[1] - 44]];
+    const prop = carrying && u < 10 ? () => bookBox(boxP[0], boxP[1], 100, 70, { flaps: 1, label: 1 }) : null;
+    if (u > 10) { pose.handsAbs = null; pose.hands = u < 11 ? [[40, -10 + (u - 10) * 30], null] : null; }
+    person({ ...HALLORAN, s, d, blink: within(u, 3.6, 3.75) || within(u, 12.4, 12.55), t: q, id: 100, turn: within(u, 5.5, 6) || u > 11.6 ? .6 : 0, headD: u > 11.6 ? -1 : d, prop, ...pose });
+  });
+}
+
+// S04 — The class watches. The lesson goes on; Danny's hand goes up, and nobody on the screen sees it.
+const LESSON62 = [[.5, '7 × 8 = 56'], [4, '9 × 6 = 54'], [9.6, '9 × 7 = 63']];
+const ROW62 = [
+  { C: CLASS62[2], x: 690, y: 488, s: 1.15, id: 1010 }, { C: CLASS62[1], x: 930, y: 488, s: 1.15, id: 1020 }, { C: CLASS62[3], x: 1170, y: 488, s: 1.15, id: 1030 },
+  { C: DANNY, x: 600, y: 590, s: 1.5, id: 1040 }, { C: CLASS62[0], x: 880, y: 590, s: 1.5, id: 1050 }, { C: CLASS62[4], x: 1160, y: 590, s: 1.5, id: 1060 },
+];
+function shotWatch(u) {
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 660], [6.5, 660], [12, 500]]), y: K(u, [[0, 390], [6.5, 390], [12, 360]]), z: K(u, [[0, 1.02], [6.5, 1.02], [12, 1.4]]) };
+  layer(.8, () => room4(ERA62, u, {}));
+  layer(.8, () => sunbeam(.1));
+  layer(.9, () => tvCart(290, 640, 1.2, (w, h) => lesson62(w, h, u, LESSON62)));
+  layer(1, () => {
+    // Miss Halloran stands at the side, by the closet; when she sees the hand she sets off
+    const hx = K(u, [[0, 1250], [13.2, 1250], [14.5, 1150]]), w = walk(1250 - hx, ADULT, 36, 9);
+    person({ ...HALLORAN, x: hx, y: 560 - 98 * 1.2 + (u > 13.2 ? w.bob : 0), s: 1.2, d: -1, feet: u > 13.2 ? w.feet : null, hands: u > 13.2 ? null : [[30, 50], [26, 54]], tilt: .05, look: [-1, u > 12.4 ? .6 : 0], mouth: u > 12.6 ? 'smile' : 'flat', blink: within(u, 5, 5.15), t: q, id: 100 });
+    for (const k of ROW62) {
+      if (k.C === DANNY) {
+        // K: watching · anticipation (hand dips) · up (stretch) · waving · it sags
+        const up = K(u, [[0, 0], [6.6, 0], [7, -.15], [7.5, 1], [12.4, 1], [13.4, .25]]);
+        const wave = within(u, 8, 12.4) ? Math.sin(u * 9) * 8 : 0;
+        const hands = [[lerp(36, 8 + wave, clamp(up)), lerp(26, -50, clamp(up))], [30, 30]];
+        kidAtDesk62(DANNY, k.x, k.y, k.s, -1, { id: k.id, hands, lean: K(u, [[0, .08], [6.6, .08], [7.5, -.06], [12.4, -.06], [13.4, .2]]), tilt: K(u, [[0, -.1], [12.6, -.1], [13.4, .15]]),
+          mouth: u > 12.8 ? 'frown' : u > 7.5 ? 'o' : 'flat', brow: u > 5 ? 1 : 0, blink: within(u, 3, 3.15), t: q, elbowOut: up > .5 });
+      } else kidAtDesk62(k.C, k.x, k.y, k.s, -1, { id: k.id, tilt: -.1, blink: within(u + k.id, 1004, 1004.15) || within(u + k.id, 1010, 1010.12), t: q, mouth: 'flat' });
+    }
+  });
+}
+
+// S05 — Miss Halloran comes round behind him and kneels at the end of his desk. Overhead: seven rows of nine.
+function shotKneel(u) {
+  const q = twos(u);
+  if (u > 6 && u < 12.2) return paperInsert(u - 6);
+  CAM = { x: K(u, [[0, 760], [4, 640]]), y: 400, z: 1 };
+  layer(.6, () => { ctx.save(); ctx.translate(-560, -300); ctx.scale(1.9, 1.9); room4(ERA62, u, { board: ' ' }); ctx.restore(); });
+  layer(.7, () => { ctx.fillStyle = 'rgba(30,25,20,.16)'; ctx.fillRect(-200, -200, W + 400, H + 400); });
+  layer(1, () => {
+    const s = 2.0, floor = 590, after = u > 12;
+    const hx = K(u, [[0, 1500], [3.4, 420]], x => ease(x) * .4 + x * .6), kneel = ease(seg(u, 3.5, 4.4));
+    const w = walk(1500 - hx, ADULT, 36, 9);
+    const standY = floor - 98 * s, kneelY = floor - (ADULT.th + 4) * s;
+    person({ ...HALLORAN, x: hx, y: lerp(standY + w.bob * s * (1 - kneel), kneelY, kneel), s, d: u < 3.4 ? -1 : 1, lean: kneel * .28, tilt: .2,
+      feet: kneel > .5 ? KNEEL_FEET(ADULT) : u < 3.4 ? w.feet : null, hands: kneel > .5 ? [[66, 46], [40, 56]] : null, mouth: after ? 'grin' : 'smile', turn: within(u, 3.2, 3.6) ? .7 : 0, blink: within(u, 4.8, 4.95), t: q, id: 100 });
+    kidAtDesk62(DANNY, 760, floor - 35 * 2.1, 2.1, -1, { id: 1040, hands: after ? [[22 + Math.sin(u * 8) * 3, -64], [30, 30]] : [[36, 26], [30, 30]], elbowOut: after, tilt: u > 3.6 ? .15 : -.05, look: u > 3.6 ? [0, .3] : [0, -.4],
+      mouth: after ? 'grin' : u > 4.4 ? 'flat' : 'frown', brow: after || u > 4.6 ? 0 : 1, t: q });
+  });
+}
+// The insert: an overhead view of Danny's paper.
+function paperInsert(v) {
+  CAM = { x: 640, y: 360, z: 1 };
+  ctx.fillStyle = '#a07a4c'; ctx.fillRect(0, 0, W, H);
+  dabs(0, 0, W, H, '#7a5a34', 80, 501, 30, 160, .25);
+  ctx.save(); ctx.translate(640, 380); ctx.rotate(-.05);
+  box(-300, -250, 600, 480, { fill: '#f4eedc', w: 2, id: 510 });
+  ctx.strokeStyle = 'rgba(90,120,170,.35)'; ctx.lineWidth = 1.5; for (let y = -200; y < 230; y += 34) { ctx.beginPath(); ctx.moveTo(-300, y); ctx.lineTo(300, y); ctx.stroke(); }
+  text('9 × 7 = ?', -250, -200, `46px ${HAND}`, '#3a3a3a', 'left');
+  // her dots: seven rows of nine
+  const n = Math.floor(clamp(seg(v, .6, 3.2)) * 63);
+  ctx.fillStyle = '#2a3a8a';
+  for (let i = 0; i < n; i++) { const r = Math.floor(i / 9), c = i % 9; ctx.beginPath(); ctx.arc(-200 + c * 42 + Math.sin(i * 3.1) * 2, -120 + r * 34 + Math.cos(i * 1.7) * 2, 7, 0, 7); ctx.fill(); }
+  // his finger counting down the rows
+  const row = Math.floor(clamp(seg(v, 3.4, 4.8)) * 6.99);
+  if (v > 3.3) written(['9', '18', '27', '36', '45', '54', '63'].slice(0, row + 1).join(', '), -250, 170, `30px ${HAND}`, '#7a3a2a', 1);
+  if (v > 5) written('63!', 100, -200, `bold 52px ${HAND}`, '#b0302a', seg(v, 5, 5.6));
+  ctx.restore();
+  // hands: hers with the pencil, then his finger
+  const pen = v < 3.3 ? [-200 + (Math.floor(clamp(seg(v, .6, 3.2)) * 63) % 9) * 42 + 640, 380 - 120 + Math.floor(clamp(seg(v, .6, 3.2)) * 62 / 9) * 34] : [1100, 760];
+  armIn(pen, [1180, 820], '#5e9c8c', '#f1cdb0', true, 520);
+  const fin = v > 3.3 && v < 5.2 ? [200, 380 - 120 + row * 34] : [-200, 800];
+  armIn(fin, [80, 800], '#c8503e', '#f2cfae', false, 530);
+}
+// An arm reaching into an overhead shot: from the edge (from) to the hand (to).
+function armIn(to, from, sleeve, skin, pencil, id) {
+  const e = [lerp(from[0], to[0], .45), lerp(from[1], to[1], .55) + 30];
+  limb([from, e, to], 40, sleeve, id);
+  ink(ellPts(to, 22, 18, 10), { fill: skin, w: 2, id: id + 1 });
+  if (pencil) { ink([[to[0] - 4, to[1] - 2], [to[0] + 60, to[1] + 70]], { w: 9, stroke: '#e8b830', id: id + 2 }); ink([[to[0] - 6, to[1] - 4], [to[0] + 2, to[1] + 6]], { w: 4, stroke: '#3a3030', id: id + 3 }); }
+  else ink([[to[0], to[1]], [to[0] + 6, to[1] - 26]], { w: 12, stroke: skin, id: id + 4 });
+}
+
+// ---------- 1975 ----------
+function house75(x, y, s, u, door) {
+  const P = (lx, ly) => [x + lx * s, y + ly * s];
+  ink([P(-310, -146), P(-200, -200), P(200, -200), P(310, -146)], { fill: '#6a4a3a', w: 2, sharp: true, still: true, id: 140 });
+  box(...P(-280, -150), 560 * s, 150 * s, { fill: '#d8c8a0', id: 141 });
+  for (let i = 0; i < 9; i++) ink([P(-280, -140 + i * 16), P(280, -140 + i * 16)], { w: 1, stroke: 'rgba(120,100,70,.35)', still: true, id: 142 + i });
+  box(...P(-220, -120), 200 * s, 80 * s, { fill: '#e8c070', w: 2, id: 151 });
+  ink([P(-120, -120), P(-120, -40)], { w: 3, stroke: '#7a5a3a', still: true, id: 152 });
+  box(...P(60, -110), 54 * s, 110 * s, { fill: '#2f6a5a', id: 153 });
+  if (door) box(...P(60, -110), 54 * s * (1 - door), 110 * s, { fill: '#3a2a20', id: 154 });
+  box(...P(160, -110), 90 * s, 60 * s, { fill: '#e8c070', id: 155 });
+  // the antenna
+  ink([P(140, -200), P(140, -290)], { w: 2 * s, stroke: '#4a4a4a', id: 156 });
+  for (const [ly, lw] of [[-284, 30], [-272, 46], [-260, 60]]) ink([P(140 - lw / 2, ly), P(140 + lw / 2, ly - 4)], { w: 1.6 * s, stroke: '#4a4a4a', id: 157 + ly });
+  return P(140, -284);
+}
+function bus(x, y, s) {
+  const P = (lx, ly) => [x + lx * s, y + ly * s];
+  ink([P(-160, -20), P(-160, -120), P(110, -120), P(120, -80), P(170, -74), P(176, -20)], { fill: '#f0b42a', sharp: true, w: 2.2, id: 170 });
+  for (let i = 0; i < 6; i++) box(...P(-146 + i * 42, -108), 34 * s, 30 * s, { fill: '#cfe0e8', w: 1.5, id: 171 + i });
+  ink([P(-160, -66), P(176, -60)], { w: 4 * s, stroke: '#2a2a2a', id: 178 });
+  text('SCHOOL BUS', P(-30, -71)[0], P(0, -71)[1], `bold ${12 * s}px ${SANS}`, '#2a2a2a');
+  for (const lx of [-100, 120]) { ink(ellPts(P(lx, -18), 22 * s, 22 * s, 12), { fill: '#2a2a2a', w: 2, id: 179 + lx }); ink(ellPts(P(lx, -18), 9 * s, 9 * s, 8), { fill: '#9a9a9a', w: 1, id: 180 + lx }); }
+}
+// S06 — 1975: the school bus, the house, the antenna. Four o'clock.
+function shotStreet(u) {
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 600], [11, 680]]), y: 360, z: 1.02 };
+  const hz = 420;
+  layer(.05, () => {
+    const g = ctx.createLinearGradient(0, -100, 0, hz); g.addColorStop(0, '#8fa8c8'); g.addColorStop(1, '#f4d8a8'); ctx.fillStyle = g; ctx.fillRect(-800, -600, W + 1600, 1100);
+    // the broadcast tower on the far ridge
+    ink([[220, hz - 10], [240, hz - 170], [260, hz - 10]], { w: 2, stroke: '#6a5a5a', still: true, id: 160 });
+    ctx.fillStyle = Math.floor(u * 1.5) % 2 ? '#ff4a3a' : '#7a3a3a'; ctx.beginPath(); ctx.arc(240, hz - 172, 4, 0, 7); ctx.fill();
+    rings(240, hz - 172, u, 2, 120, '255,230,190');
+  });
+  layer(.3, () => { ctx.fillStyle = '#9aa070'; ctx.fillRect(-800, hz - 10, W + 1600, 30); dabs(-800, hz - 40, W + 1600, 40, '#7a6a3a', 50, 161, 20, 50, .7); });
+  layer(.6, () => {
+    ctx.fillStyle = '#8aa05a'; ctx.fillRect(-800, hz + 10, W + 1600, 800);
+    const ant = house75(760, 560, 1, u, K(u, [[0, 0], [6.8, 0], [7.2, 1], [8.6, 1], [9, 0]]));
+    if (u > 9) rings(ant[0], ant[1], u, 1.4, 50, '255,240,190');
+    // a maple in its autumn colour
+    ink([[1150, 560], [1156, 380], [1166, 380], [1172, 560]], { fill: '#5a3a2a', w: 1.6, still: true, id: 162 });
+    dabs(1040, 260, 240, 160, '#d8702a', 30, 163, 30, 70, .9); dabs(1060, 280, 200, 120, '#e8a03a', 20, 164, 20, 50, .9);
+  });
+  layer(1, () => {
+    ctx.fillStyle = '#c8c0b0'; ctx.fillRect(-600, 610, W + 1200, 26);
+    ctx.fillStyle = '#5a5a5a'; ctx.fillRect(-600, 636, W + 1200, 200);
+    const bx = K(u, [[0, -500], [2.4, 260], [9, 260], [12, 1700]], ease);
+    if (u > 2.6 && u < 8.4) {
+      // Linda and Kevin run up the path to the front door
+      for (const [C, s, t0, x0, id] of [[LINDA, .78, 2.8, 330, 1400], [KEVIN, .62, 3.1, 300, 1450]]) {
+        const f = seg(u, t0, t0 + 3.4), x = lerp(x0, 820, f), y = lerp(640, 570, f);
+        if (f >= 1) continue;
+        const w = walk((x - x0) * 1.4, KID, 26, 12);
+        person({ ...C, x, y: y - (KID.th + KID.sh) * s + w.bob * s - 4 * s, s, d: 1, lean: .2, feet: w.feet, hands: [[-w.hands[0][0] * 1.4, 34], [-w.hands[1][0] * 1.4, 34]], mouth: 'grin', t: q, id });
+      }
+    }
+    bus(bx, 650, 1.1);
+  });
+  yearCard(u, '1975', 'Homework');
+}
+function livingRoom(u) {
+  // wood panelling, the window with its orange curtains, the couch and lamp, the kitchen door
+  ctx.fillStyle = '#7a5232'; ctx.fillRect(-700, -500, W + 1400, 1100);
+  for (let i = -30; i < 60; i++) { ctx.fillStyle = i % 2 ? 'rgba(40,20,5,.18)' : 'rgba(255,220,170,.06)'; ctx.fillRect(i * 34, -500, 3, 1100); }
+  box(560, 150, 300, 220, { fill: '#e8d8a8', w: 2, id: 200 });
+  ctx.save(); ctx.beginPath(); ctx.rect(560, 150, 300, 220); ctx.clip(); dabs(560, 300, 300, 80, '#8aa05a', 20, 201, 20, 60, .8); dabs(700, 230, 200, 90, '#d8702a', 14, 202, 20, 50, .8); ctx.restore();
+  for (const [x0, x1] of [[540, 620], [800, 880]]) ink([[x0, 140], [x1, 140], [x1 - 6, 390], [x0 + 6, 390]], { fill: '#d86a2a', w: 1.8, still: true, id: 203 + x0 });
+  box(1150, 160, 140, 420, { fill: '#e8d8b0', id: 207 });
+  box(1150, 160, 140, 420, { fill: false, stroke: '#4a3020', w: 8, id: 208 });
+  // the shag carpet
+  const g = ctx.createLinearGradient(0, 580, 0, 900); g.addColorStop(0, '#9a6a24'); g.addColorStop(1, '#c08a34'); ctx.fillStyle = g; ctx.fillRect(-700, 580, W + 1400, 600);
+  dabs(-700, 580, W + 1400, 600, '#7a5018', 260, 209, 2, 6, .4);
+  box(-700, 572, W + 1400, 10, { fill: '#5a3a20', id: 210 });
+  // couch and lamp
+  ink([[880, 600], [880, 470], [1130, 470], [1130, 600]], { fill: '#8a8c3a', sharp: true, w: 2, still: true, id: 211 });
+  ink([[860, 520], [1150, 520], [1150, 600], [860, 600]], { fill: '#9a9c48', sharp: true, w: 2, still: true, id: 212 });
+  ink([[1180, 600], [1180, 330]], { w: 3, stroke: '#3a2a20', still: true, id: 213 });
+  ink([[1150, 330], [1210, 330], [1196, 280], [1164, 280]], { fill: '#f0d890', w: 1.6, still: true, id: 214 });
+}
+function tv75(x, y, s, content) {
+  const P = (lx, ly) => [x + lx * s, y + ly * s];
+  for (const lx of [-120, 120]) ink([P(lx, 0), P(lx * .95, -30)], { w: 4 * s, stroke: '#3a2a1a', id: 220 + lx });
+  box(...P(-140, -170), 280 * s, 140 * s, { fill: '#5a3a22', w: 2.2, id: 221 });
+  box(...P(40, -150), 84 * s, 100 * s, { fill: '#c8a878', w: 1.6, id: 222 });
+  for (let i = 0; i < 8; i++) ink([P(44, -142 + i * 12), P(120, -142 + i * 12)], { w: 1.2, stroke: 'rgba(60,40,20,.5)', id: 223 + i });
+  ink([P(-40, -170), P(-90, -260)], { w: 2 * s, stroke: '#9a9a9a', id: 232 }); ink([P(-20, -170), P(20, -262)], { w: 2 * s, stroke: '#9a9a9a', id: 233 });
+  const sr = [...P(-128, -160), 156 * s, 118 * s];
+  screen(...sr, 16 * s, content, { crt: true });
+  ink(ellPts(P(60, -38), 7 * s, 7 * s, 8), { fill: '#d8c8a8', w: 1.4, id: 234 }); ink(ellPts(P(100, -38), 7 * s, 7 * s, 8), { fill: '#d8c8a8', w: 1.4, id: 235 });
+  return { screen: sr, dial: P(100, -38) };
+}
+// The 1975 lesson on Channel 7: the fifty states, one at a time.
+function lesson75(w, h, u, mode) {
+  if (mode === 'cartoon') {
+    ctx.fillStyle = '#f0d040'; ctx.fillRect(0, 0, w, h);
+    const cx = frac(u * .4) * (w + 80) - 40;
+    ink(ellPts([cx, h * .65], w * .09, w * .07, 10), { fill: '#7a7a8a', w: 2, id: 240 });
+    ink(ellPts([cx - w * .3, h * .6], w * .12, w * .1, 10), { fill: '#e07a2a', w: 2, id: 241 });
+    text('ZOOM!', w * .5, h * .25, `bold ${h * .16}px ${SANS}`, '#c82a2a');
+    return;
+  }
+  ctx.fillStyle = '#2a5aa0'; ctx.fillRect(0, 0, w, h);
+  const k = w / 300;
+  // a rough United States, with Indiana picked out
+  const us = [[30, 70], [90, 56], [170, 60], [230, 52], [262, 64], [270, 96], [246, 130], [250, 168], [220, 160], [180, 170], [150, 196], [120, 170], [70, 168], [36, 130]];
+  ink(us.map(([a, b]) => [a * k, b * k]), { fill: '#7ab060', w: 2, still: true, id: 245 });
+  ink([[188, 96], [204, 94], [206, 132], [190, 134]].map(([a, b]) => [a * k, b * k]), { fill: mode === 'ohio' ? '#7ab060' : '#f0c040', w: 1.6, id: 246 });
+  if (mode === 'ohio') ink([[206, 92], [226, 88], [228, 122], [208, 128]].map(([a, b]) => [a * k, b * k]), { fill: '#f0c040', w: 1.6, id: 247 });
+  const line = mode === 'q' ? 'THE CAPITAL OF INDIANA IS …' : mode === 'a' ? 'INDIANAPOLIS!' : mode === 'ohio' ? 'NEXT: OHIO' : 'LESSON 112 · THE FIFTY STATES';
+  ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.fillRect(0, h - 40 * k, w, 40 * k);
+  text(line, w / 2, h - 14 * k, `bold ${17 * k}px ${SANS}`, '#fff');
+  if (mode === 'a') { ink(ellPts([197 * k, 112 * k], 8 * k, 8 * k, 8), { fill: '#e83a2a', stroke: '#fff', w: 2, id: 248 }); }
+}
+// Linda on the carpet: knees up, notebook resting on them.
+const LSIT = { feet: [[KID.th * 1.15, 12], [KID.th * 1.02, 14]], lean: .12 };
+function notebook(o, pen) {
+  const c = mid(o.hands[0], o.hands[1]);
+  ctx.save(); ctx.translate(c[0], c[1] - 4); ctx.rotate(-.35 * (o.dsign || 1));
+  box(-26, -5, 52, 10, { fill: '#f2eee0', id: 1490 }); ink([[0, -5], [0, 5]], { w: 1, stroke: '#a8a090', id: 1491 });
+  ctx.restore();
+  if (pen) ink([o.hands[0], [o.hands[0][0] + 6, o.hands[0][1] - 18]], { w: 3, stroke: '#e8b830', id: 1492 });
+}
+// A tray: a glass of milk and a plate of cookies.
+function snackTray(c, n, id) {
+  ink([[c[0] - 50, c[1] - 4], [c[0] + 50, c[1] - 4], [c[0] + 44, c[1] + 4], [c[0] - 44, c[1] + 4]], { fill: '#b8b8b0', sharp: true, w: 1.6, id });
+  box(c[0] - 38, c[1] - 36, 16, 32, { fill: '#fbfbf6', id: id + 1 });
+  ink(ellPts([c[0] + 14, c[1] - 6], 26, 5, 10), { fill: '#f2eee6', w: 1.4, id: id + 2 });
+  for (let i = 0; i < n; i++) ink(ellPts([c[0] + 2 + i * 12, c[1] - 10 - (i % 2) * 3], 8, 4, 8), { fill: '#b07a3a', w: 1.2, id: id + 3 + i });
+}
+// S07 — Homework is watching. Kevin changes the channel; Linda changes it back with her toe.
+function shotHomework(u) {
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 600], [20, 560]]), y: 500, z: K(u, [[0, 1.4], [20, 1.48]]) };
+  const switched = within(u, 11, 15.3);
+  layer(.8, () => livingRoom(u));
+  layer(1, () => {
+    const tv = tv75(300, 610, 1.05, (w, h) => lesson75(w, h, u, switched ? 'cartoon' : 'map'));
+    const s = 1.6;
+    // Linda: writes · double take · glare · scoots, leans back, stretches a leg to the dial · settles
+    const scoot = K(u, [[0, 0], [13.4, 0], [14, 1], [15.8, 1], [16.6, 0]]);
+    const toe = K(u, [[0, 0], [14, 0], [14.7, 1], [15.5, 1], [16, 0]]);
+    const lx = lerp(600, 502, scoot);
+    const writing = within(u, 1.5, 7.5) && frac(u / 2.2) < .7, pencil = writing ? Math.sin(u * 15) * 3 : 0;
+    const dialRel = [(lx - tv.dial[0]) / s, (tv.dial[1] - (640 - 10 * s)) / s];
+    const drawLinda = () => {
+    person({ ...LINDA, x: lx, y: 640 - 10 * s, s, d: -1, lean: lerp(LSIT.lean, -.38, toe), tilt: writing ? .35 : lerp(-.08, .2, toe),
+      feet: [mix(LSIT.feet[0], dialRel, toe), LSIT.feet[1]], hands: toe > .2 ? [[-26, 50], [-34, 48]] : [[30 + pencil, 26], [22, 30]],
+      mouth: switched ? (u > 12.4 ? 'frown' : 'flat') : u > 15.3 ? 'smile' : writing ? 'flat' : 'smile', brow: within(u, 11.6, 15.3) ? 1 : 0, wide: within(u, 11.1, 11.9) ? 1 : 0,
+      look: within(u, 12.2, 13.6) ? [1, 0] : [0, 0], blink: within(u, 4, 4.15) || within(u, 18, 18.15), t: q, id: 1400,
+      prop: o => { if (toe < .2) notebook(o, writing); } });
+    if (toe > .2) { ctx.save(); ctx.translate(lx + 30, 640); ctx.rotate(-.2); box(-26, -6, 52, 8, { fill: '#f2eee0', id: 1497 }); ctx.restore(); }
+    };
+    const drawKevin = () => {
+    // Kevin: walks in, plants himself in front of the set, turns the dial, grins; wanders off to sit
+    const kx = K(u, [[0, 1340], [8, 1340], [10.4, 450], [12.6, 450], [14.6, 720]], x => x), ky = within(u, 12.6, 14.6) ? -14 * Math.sin(seg(u, 12.6, 14.6) * Math.PI) : 0;
+    const kw = walk(Math.abs(1340 - kx), KID, 22, 9), sit = ease(seg(u, 14.6, 15.2)), ks = 1.15;
+    if (kx < 1330) person({ ...KEVIN, x: kx, y: lerp(660 - (KID.th + KID.sh) * ks + kw.bob, 660 - 10 * ks, sit) + ky, s: ks, d: within(u, 12.6, 14.6) ? 1 : -1, lean: within(u, 10.5, 11.4) ? .25 : sit * .12,
+      feet: sit > .5 ? LSIT.feet : within(u, 8, 10.4) || within(u, 12.6, 14.6) ? kw.feet : null, handsAbs: within(u, 10.5, 11.3) ? [tv.dial, null] : null, hands: sit > .5 ? [[24, 30], [20, 32]] : null,
+      mouth: u > 15.4 ? 'frown' : switched ? 'grin' : 'smile', headD: within(u, 11.4, 12.6) ? 1 : null, turn: within(u, 11.4, 12.6) ? .7 : 0, tilt: u > 15.4 ? .15 : 0, t: q, id: 1450 });
+    };
+    if (within(u, 12.6, 14.6)) { drawKevin(); drawLinda(); } else { drawLinda(); drawKevin(); }
+  });
+}
+// S08 — Mother brings a snack. Linda turns round; the answer comes and goes.
+function shotSnack(u) {
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 620], [8, 600], [12, 480]]), y: K(u, [[0, 480], [12, 500]]), z: K(u, [[0, 1.38], [8, 1.42], [12, 1.75]]) };
+  const mode = u < 2 ? 'map' : u < 5 ? 'q' : u < 7.6 ? 'a' : 'ohio';
+  layer(.8, () => livingRoom(u));
+  layer(1, () => {
+    tv75(300, 610, 1.05, (w, h) => lesson75(w, h, u, mode));
+    const mx = K(u, [[0, 1400], [3.6, 800], [8.4, 800], [10.2, 1400]], ease);
+    const mw = walk(Math.abs(1400 - mx), ADULT, 34, 8), ms = 1.45;
+    const turned = within(u, 3.4, 8.2), took = u > 5.2, s = 1.6;
+    let tray = null;
+    if (mx < 1380) {
+      const m = person({ ...MOM75, x: mx, y: 650 - 98 * ms + (within(u, 3.6, 8.4) ? 0 : mw.bob * ms), s: ms, d: within(u, 8.4, 10.2) ? 1 : -1, feet: within(u, 3.6, 8.4) ? null : mw.feet,
+        hands: [[34, 30], [30, 34]], mouth: within(u, 2.6, 4.4) ? 'talk' : 'smile', t: u, id: 1500,
+        prop: o => { const c = mid(o.hands[0], o.hands[1]); tray = c; snackTray(c, took ? 1 : 3, 1510); } });
+      void m;
+    }
+    const lean = turned ? .02 : u > 9.4 ? .34 : LSIT.lean;
+    person({ ...LINDA, x: 600, y: 640 - 10 * s, s, d: -1, lean, tilt: turned ? -.2 : u > 9.4 ? .3 : -.08,
+      feet: LSIT.feet, headD: turned ? 1 : null, turn: turned ? .45 : 0,
+      hands: u > 9.4 ? [[34, 22], [26, 28]] : [[30, 26], [22, 30]], handsAbs: turned && tray && within(u, 4.4, 5.6) ? [[tray[0] + 10, tray[1] - 6], null] : null,
+      mouth: turned ? 'grin' : u > 9.6 ? 'frown' : u > 8.3 ? 'o' : 'flat', wide: within(u, 8.3, 9.4) ? 1 : 0, brow: u > 8.6 ? 1 : 0, t: q, id: 1400,
+      prop: o => { notebook(o, false); if (took && u < 9.4) ink(ellPts(o.hands[1], 7, 3, 8), { fill: '#a0703a', w: 1, id: 1495 }); } });
+    // Kevin beside her, already on his second cookie
+    person({ ...KEVIN, x: 720, y: 660 - 10 * 1.15, s: 1.15, d: -1, lean: LSIT.lean, feet: LSIT.feet, hands: [[24, 30], [20, 32]], headD: within(u, 3.4, 8.4) ? 1 : null, turn: within(u, 3.4, 8.4) ? .5 : 0, mouth: 'grin', t: q, id: 1450,
+      prop: o => ink(ellPts(o.hands[0], 6, 3, 8), { fill: '#a0703a', w: 1, id: 1496 }) });
+  });
+}
+
+// ---------- 1988 ----------
+// Beige monitors along the counter under the window, a VCR beneath each.
+const MON88 = [130, 290, 450, 610, 790, 950];
+function monitor88(x, y, s, content, id) {
+  const P = (lx, ly) => [x + lx * s, y + ly * s];
+  box(...P(-62, -24), 124 * s, 24 * s, { fill: '#2a2a2e', id: id });
+  ink([P(-50, -14), P(-20, -14)], { w: 2, stroke: '#4aa04a', id: id + 1 });
+  box(...P(-66, -132), 132 * s, 104 * s, { fill: '#e2dccb', w: 2, id: id + 2 });
+  const sr = [...P(-54, -122), 108 * s, 82 * s];
+  screen(...sr, 8 * s, content, { crt: true });
+  return sr;
+}
+const SUBJ88 = [
+  (w, h, u) => { ctx.fillStyle = '#1a3a8a'; ctx.fillRect(0, 0, w, h); const a = 1.5 + Math.sin(u) * .5; ctx.fillStyle = '#f0c040'; ctx.beginPath(); ctx.moveTo(w / 2, h / 2); ctx.arc(w / 2, h / 2, h * .32, 0, a * Math.PI); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(w / 2, h / 2, h * .32, 0, 7); ctx.stroke(); },
+  (w, h, u) => { ctx.fillStyle = '#0a2a1a'; ctx.fillRect(0, 0, w, h); ctx.fillStyle = '#3a8ae0'; ctx.beginPath(); ctx.arc(w / 2, h / 2, h * .34, 0, 7); ctx.fill(); ctx.fillStyle = '#4ab04a'; for (let i = 0; i < 4; i++) { ctx.beginPath(); ctx.ellipse(w / 2 + Math.cos(u + i * 1.6) * h * .18, h / 2 + Math.sin(i * 2) * h * .14, h * .1, h * .07, 0, 0, 7); ctx.fill(); } },
+  (w, h, u) => { ctx.fillStyle = '#5a2a6a'; ctx.fillRect(0, 0, w, h); text('A b C', w / 2, h * .62, `bold ${h * .34}px ${SERIF}`, '#f8e060'); void u; },
+  (w, h, u) => { ctx.fillStyle = '#2a6a5a'; ctx.fillRect(0, 0, w, h); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(w * .1, h * .7); ctx.lineTo(w * .9, h * .7); ctx.stroke(); ctx.fillStyle = '#f04a3a'; ctx.beginPath(); ctx.arc(w * (.15 + frac(u * .15) * .7), h * .7, 5, 0, 7); ctx.fill(); },
+  (w, h, u) => { ctx.fillStyle = '#7a4a2a'; ctx.fillRect(0, 0, w, h); ctx.fillStyle = '#5ab04a'; ctx.fillRect(w * .46, h * .4, w * .08, h * .5); ctx.beginPath(); ctx.ellipse(w * .4, h * .42, w * .12, h * .06, -.4, 0, 7); ctx.ellipse(w * .6, h * .36, w * .12, h * .06, .4, 0, 7); ctx.fill(); ctx.fillStyle = '#f8d040'; ctx.beginPath(); ctx.arc(w * .82, h * .2, h * .1, 0, 7); ctx.fill(); void u; },
+  (w, h, u) => { ctx.fillStyle = '#3a3a5a'; ctx.fillRect(0, 0, w, h); ink([[w * .2, h * .8], [w * .3, h * .4], [w * .55, h * .3], [w * .7, h * .5], [w * .85, h * .45], [w * .8, h * .8]], { fill: '#6a9a4a', w: 2, id: 860 }); void u; },
+];
+function vcrOSD(w, h, t) { text(t, w * .06, h * .92, `bold ${h * .14}px ${MONO}`, '#e8f0e8', 'left'); }
+function rewindNoise(w, h, u) {
+  const r = R(BOIL * 3);
+  for (let i = 0; i < 5; i++) { const y = frac(u * 1.7 + i * .21) * h; ctx.fillStyle = 'rgba(255,255,255,.55)'; ctx.fillRect(0, y, w, 3 + r() * 6); ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(0, y + 8, w, 4); }
+}
+function room88Counter() {
+  box(40, 430, 960, 18, { fill: '#c8b89a', id: 870 });
+  box(50, 448, 940, 112, { fill: '#a89878', id: 871 });
+}
+// S09 — 1988: pulled back from one screen, the same room, now full of them.
+function shotScreens88(u) {
+  const q = twos(u);
+  const z = K(u, [[0, 6.5], [1.2, 6.5], [5, 1]], x => ease(x) * .3 + easeOut(x) * .7);
+  CAM = { x: K(u, [[0, 450 - 2], [1.2, 450 - 2], [5, 640]]), y: K(u, [[0, 384], [1.2, 384], [5, 380]]), z: K(u, [[0, 1], [14, 1.04]]) * (z > 1 ? 1 : 1) };
+  CAM.z = z * K(u, [[5, 1], [14, 1.04]]);
+  layer(1, () => {
+    room4(ERA88, u, { time: 10.7 });
+    // the progress chart where the blackboard was
+    box(80, 140, 520, 200, { fill: '#f2ead8', w: 2, id: 880 });
+    text('WHERE WE ARE', 340, 172, `bold 24px ${SANS}`, '#c84a3a');
+    const hts = [.9, .55, .4, .7, .3, .62, .2, .8, .48, .66];
+    hts.forEach((v, i) => { for (let k = 0; k < Math.round(v * 8); k++) { ctx.fillStyle = ['#e8b830', '#e8584a', '#4a8ae0'][(i + k) % 3]; ctx.beginPath(); ctx.arc(120 + i * 48, 320 - k * 16, 6, 0, 7); ctx.fill(); } });
+    room88Counter();
+    MON88.forEach((mx, i) => monitor88(mx, 430, 1, (w, h) => { SUBJ88[i](w, h, u); if (i === 2 && u < 1.6) { ctx.fillStyle = '#1a2aa0'; ctx.fillRect(0, 0, w, h); vcrOSD(w, h, 'PLAY ▶'); } }, 890 + i * 10));
+  });
+  layer(1, () => {
+    const kids = KIDS88;
+    MON88.forEach((mx, i) => {
+      const C = kids[i % kids.length];
+      backKid({ ...C, x: mx + (i % 2 ? 6 : -4), y: 630, s: 1.25, phones: true, id: 1600 + i * 30, lean: Math.sin(u * .7 + i) * .3, hands: [[mx - 13, 596], [mx + 13, 596]] });
+      box(mx - 40, 630, 80, 10, { fill: '#c84a3a', id: 1700 + i });
+      ink([[mx - 30, 640], [mx - 34, 720]], { w: 4, stroke: '#4a4a50', id: 1710 + i }); ink([[mx + 30, 640], [mx + 34, 720]], { w: 4, stroke: '#4a4a50', id: 1720 + i });
+    });
+    // Mrs. Halloran with her clipboard
+    const hx = K(u, [[0, 700], [7, 700], [10, 400], [15, 400]]), hw = walk(700 - hx, ADULT, 36, 9), bend = K(u, [[0, 0], [10, 0], [11, 1]]);
+    person({ ...HALLORAN88, x: hx, y: 690 - 98 * 1.4 + (within(u, 7, 10) ? hw.bob * 1.4 : 0), s: 1.4, d: u < 7 ? 1 : -1, lean: bend * .45, tilt: .2 - bend * .25, feet: within(u, 7, 10) ? hw.feet : null,
+      hands: [[30, 40], [36, 34]], mouth: bend > .5 ? 'talk' : 'smile', blink: within(u, 6, 6.15), t: u, id: 100,
+      prop: o => { const c = mid(o.hands[0], o.hands[1]); ink([[c[0] - 10, c[1] - 40], [c[0] + 20, c[1] - 40], [c[0] + 24, c[1] + 10], [c[0] - 6, c[1] + 10]], { fill: '#c8a878', sharp: true, w: 1.6, id: 1790 }); box(c[0] - 4, c[1] - 34, 22, 36, { fill: '#f8f4e8', id: 1791 }); } });
+  });
+  yearCard(u, '1988', 'Room 4, again');
+}
+// S10 — Close on Rosa's screen: she rewinds the fractions tape and watches it again.
+function shotRewind(u) {
+  const q = twos(u);
+  CAM = { x: 640, y: 360, z: K(u, [[0, 1], [16, 1.06]]) };
+  const rew = within(u, 4.2, 6.6), paused = within(u, 3.2, 4.2);
+  layer(.6, () => { ctx.fillStyle = '#e0d6c4'; ctx.fillRect(-200, -200, W + 400, H + 400); dabs(-200, -200, W + 400, H + 400, '#c8bca8', 50, 901, 40, 140, .3); });
+  layer(1, () => {
+    box(-100, 520, W + 200, 40, { fill: '#c8b89a', id: 902 });
+    box(-100, 560, W + 200, 300, { fill: '#a89878', id: 903 });
+    // her monitor
+    box(180, 70, 520, 420, { fill: '#e2dccb', w: 2.5, id: 904 });
+    screen(222, 104, 436, 330, 20, (w, h) => {
+      const back = rew ? 1 - seg(u, 4.2, 6.6) : 0;
+      const f = rew ? back : paused ? 1 : u < 3.2 ? seg(u, 0, 3) : seg(u, 6.8, 11);
+      ctx.fillStyle = '#1a3a8a'; ctx.fillRect(0, 0, w, h);
+      const cx = w * .35, cy = h * .52, rr = h * .3;
+      for (let i = 0; i < 4; i++) { const off = i === 3 ? f * 70 : 0; ctx.fillStyle = i === 3 ? '#f0c040' : '#6a8ad0'; ctx.beginPath(); ctx.moveTo(cx + off, cy - off * .3); ctx.arc(cx + off, cy - off * .3, rr, i * Math.PI / 2, (i + 1) * Math.PI / 2); ctx.closePath(); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke(); }
+      if (f > .6) written('1/4', w * .74, h * .45, `bold ${h * .2}px ${SANS}`, '#fff', seg(f, .6, 1), 'center');
+      text('LESSON 37 · FRACTIONS', w / 2, h * .12, `bold ${h * .065}px ${SANS}`, 'rgba(255,255,255,.85)');
+      if (rew) { rewindNoise(w, h, u); vcrOSD(w, h, '◀◀ REW'); }
+      if (paused) vcrOSD(w, h, '❚❚ PAUSE');
+      if (u > 6.6 && u < 7.6) vcrOSD(w, h, 'PLAY ▶');
+    }, { crt: true });
+    // the VCR and the tapes
+    box(240, 470, 400, 50, { fill: '#2a2a2e', w: 2, id: 905 });
+    box(270, 486, 160, 10, { fill: '#111', id: 906 });
+    text(rew ? '0:41' : '0:52', 540, 502, `bold 18px ${MONO}`, '#5ae05a');
+    const tapes = ['35', '36', '37'];
+    tapes.forEach((t, i) => { box(720, 500 - i * 22, 140, 22, { fill: '#1e1e22', id: 910 + i }); box(740, 504 - i * 22, 100, 14, { fill: '#f2eee0', id: 914 + i }); text('FRACTIONS ' + t, 790, 515 - i * 22, `bold 10px ${HAND}`, '#3a3a8a'); });
+    // the next desk's stack
+    ['50', '51', '52'].forEach((t, i) => { box(1110, 500 - i * 22, 140, 22, { fill: '#1e1e22', id: 920 + i }); box(1130, 504 - i * 22, 100, 14, { fill: '#f2eee0', id: 924 + i }); text('FRACTIONS ' + t, 1180, 515 - i * 22, `bold 10px ${HAND}`, '#3a3a8a'); });
+    // Rosa, from behind, reaching for the button
+    // Rosa, from behind, with the remote
+    const aim = K(u, [[0, 0], [2.6, 0], [3, 1], [4.8, 1], [5.2, .5], [6.2, .5], [6.6, 1], [7.2, 1], [7.8, 0]]);
+    const rh = [lerp(990, 890, aim), lerp(700, 470, aim)];
+    backKid({ ...ROSA, x: 1010, y: 730, s: 2.5, phones: true, id: 1600, lean: -aim * .25, hands: [rh, [1040, 690]] });
+    ctx.save(); ctx.translate(rh[0], rh[1]); ctx.rotate(-.5 - aim * .4); box(-10, -40, 20, 46, { fill: '#2a2a2e', w: 1.6, id: 930, still: false }); ctx.fillStyle = rew ? '#e85a3a' : '#7a7a80'; ctx.fillRect(-5, -34, 10, 6); ctx.restore();
+    ink(ellPts(rh, 10, 9, 8), { fill: ROSA.skin, w: 1.4, id: 931 });
+    if (aim > .9 && (rew || paused || within(u, 6.6, 7.2))) for (let i = 0; i < 3; i++) { const f = frac(u * 2 + i / 3); ctx.strokeStyle = `rgba(255,255,255,${.6 * (1 - f)})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(rh[0] - 30, rh[1] - 40, 10 + f * 40, Math.PI * 1.05, Math.PI * 1.45); ctx.stroke(); }
+  });
+}
+// S11 — The chart on the wall, and Tommy's paper.
+function shotSpelling(u) {
+  if (u > 7) return spellingInsert(u - 7);
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 360], [7, 330]]), y: 270, z: K(u, [[0, 1.6], [7, 1.7]]) };
+  layer(1, () => {
+    room4(ERA88, u, { time: 11.2 });
+    box(80, 140, 520, 200, { fill: '#f2ead8', w: 2, id: 880 });
+    text('WHERE WE ARE', 340, 172, `bold 24px ${SANS}`, '#c84a3a');
+    const names = ['ANDRE', 'ROSA', 'TOMMY', 'KIM', 'LUIS', 'JEN', 'SAM', 'NIA', 'BEN', 'EVA'];
+    const hts = [.95, .55, .25, .7, .3, .62, .2, .8, .48, .66];
+    hts.forEach((v, i) => {
+      const n = Math.round(v * 8) + (i === 0 && u > 2.4 ? 1 : 0);
+      for (let k = 0; k < n; k++) { ctx.fillStyle = ['#e8b830', '#e8584a', '#4a8ae0'][(i + k) % 3]; ctx.beginPath(); ctx.arc(120 + i * 48, 320 - k * 16, 6, 0, 7); ctx.fill(); }
+      ctx.save(); ctx.translate(124 + i * 48, 334); text(names[i], 0, 0, `bold 9px ${SANS}`, '#4a3a30'); ctx.restore();
+    });
+    // her hand adds a star to Andre's column; it is already off the top
+    const hand = u < 2.6 ? [lerp(420, 120, ease(seg(u, .4, 2.2))), lerp(380, 168, ease(seg(u, .4, 2.2)))] : [lerp(120, 300, ease(seg(u, 3.6, 5))), lerp(168, 330, ease(seg(u, 3.6, 5)))];
+    limb([[hand[0] + 380, hand[1] + 150], [hand[0] + 150, hand[1] + 70], hand], 11, HALLORAN88.shirt, 950);
+    ink(ellPts(hand, 8, 7, 8), { fill: HALLORAN88.skin, w: 1.5, id: 951 });
+    ink(ellPts([hand[0] - 2, hand[1] - 8], 6, 6, 8), { fill: u < 2.6 ? '#e8b830' : HALLORAN88.skin, w: 1.2, id: 952 });
+  });
+}
+function spellingInsert(v) {
+  CAM = { x: 640, y: 360, z: 1 };
+  ctx.fillStyle = '#c8b89a'; ctx.fillRect(0, 0, W, H);
+  dabs(0, 0, W, H, '#a89878', 60, 961, 30, 160, .25);
+  ctx.save(); ctx.translate(640, 330); ctx.rotate(.04);
+  box(-330, -290, 660, 540, { fill: '#f6f2e6', w: 2, id: 962 });
+  // his plant, with the sun's arrows and a crayon sun
+  ctx.save(); ctx.translate(0, -60);
+  ink([[-40, 150], [-36, -40]], { w: 8, stroke: '#4a9a3a', still: true, id: 963 });
+  ink(ellPts([-90, -20], 50, 20, 10), { fill: '#6aba4a', w: 2, still: true, id: 964 }); ink(ellPts([20, -60], 54, 20, 10), { fill: '#6aba4a', w: 2, still: true, id: 965 });
+  ink(ellPts([-34, 160], 110, 20, 10), { fill: '#8a5a3a', w: 2, still: true, id: 966 });
+  ink(ellPts([220, -190], 50, 50, 12), { fill: '#f8d040', w: 2, still: true, id: 967 });
+  for (let i = 0; i < 3; i++) ink([[180 - i * 20, -130 + i * 30], [40 - i * 30, -60 + i * 40]], { w: 4, stroke: '#e8a020', still: true, id: 968 + i });
+  text('H₂O', -210, 120, `bold 32px ${HAND}`, '#3a6ab0', 'left'); text('CO₂', 120, 40, `bold 32px ${HAND}`, '#6a6a6a', 'left');
+  ctx.restore();
+  text('FOTOSINTHESIS', -250, 200, `bold 40px ${HAND}`, '#2a2a2a', 'left');
+  // her correction, gently: a line through it and the word above
+  const f = seg(v, 1.2, 2.4);
+  if (f > 0) { ctx.strokeStyle = '#c83a2a'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-254, 188); ctx.lineTo(-254 + 360 * f, 186); ctx.stroke(); }
+  written('photosynthesis', -250, 150, `40px ${HAND}`, '#c83a2a', seg(v, 2.6, 5));
+  if (v > 5.4) written('Lovely diagram!', 60, -230, `30px ${HAND}`, '#c83a2a', seg(v, 5.4, 6.6), 'left');
+  ctx.restore();
+  const pen = v < 1.1 ? [lerp(1500, 1000, seg(v, 0, 1.1)), 520] : v < 2.4 ? [640 - 254 + 360 * seg(v, 1.2, 2.4), 330 + 186] : v < 5 ? [640 - 250 + 330 * seg(v, 2.6, 5), 330 + 150] : v < 6.6 ? [640 + 60 + 240 * seg(v, 5.4, 6.6), 330 - 232] : [1200, 600];
+  armIn(pen, [1420, pen[1] + 200], HALLORAN88.shirt, HALLORAN88.skin, true, 970);
+}
+
+// ---------- 2004 ----------
+function bedroom04(u) {
+  ctx.fillStyle = '#8ea4c4'; ctx.fillRect(-700, -500, W + 1400, 1100);
+  dabs(-700, -500, W + 1400, 1100, '#7a90b2', 60, 1001, 40, 140, .2);
+  // the window, night coming on
+  box(560, 130, 260, 220, { fill: '#2a3a6a', w: 2, id: 1002 });
+  const r = R(1003); ctx.fillStyle = '#fff'; for (let i = 0; i < 20; i++) ctx.fillRect(570 + r() * 240, 140 + r() * 120, 2, 2);
+  ctx.strokeStyle = '#e8e4dc'; ctx.lineWidth = 8; ctx.strokeRect(560, 130, 260, 220); ctx.beginPath(); ctx.moveTo(690, 130); ctx.lineTo(690, 350); ctx.stroke();
+  // posters
+  box(900, 120, 150, 200, { fill: '#2a2a2a', w: 2, id: 1004 }); ink([[920, 290], [975, 160], [1030, 290]], { fill: '#c8502a', w: 2, still: true, id: 1005 }); ink(ellPts([975, 150], 26, 14, 10), { fill: '#e8c040', stroke: false, still: true, id: 1006 });
+  box(120, 110, 120, 160, { fill: '#e8e0c8', w: 2, id: 1007 }); ink(ellPts([180, 180], 40, 40, 14), { fill: '#3a8ac8', w: 2, still: true, id: 1008 });
+  const g = ctx.createLinearGradient(0, 580, 0, 900); g.addColorStop(0, '#9a8a70'); g.addColorStop(1, '#b8a888'); ctx.fillStyle = g; ctx.fillRect(-700, 580, W + 1400, 600);
+  box(-700, 572, W + 1400, 10, { fill: '#e8e4dc', id: 1009 });
+  // the door, and the bed
+  box(1120, 150, 150, 430, { fill: '#e8e4dc', id: 1010 }); box(1120, 150, 150, 430, { fill: false, stroke: '#c8c0b0', w: 8, id: 1011 });
+  ink([[860, 600], [860, 500], [1100, 500], [1100, 600]], { fill: '#3a5a8a', sharp: true, w: 2, still: true, id: 1012 });
+  ink(ellPts([920, 492], 50, 18, 10), { fill: '#f2eee6', w: 2, still: true, id: 1013 });
+}
+function crt04(x, y, s, content) {
+  const P = (lx, ly) => [x + lx * s, y + ly * s];
+  box(...P(-30, -10), 60 * s, 12 * s, { fill: '#cfcbc0', id: 1020 });
+  box(...P(-140, -230), 280 * s, 220 * s, { fill: '#d9d6cc', w: 2.2, id: 1021 });
+  box(...P(-20, -246), 40 * s, 16 * s, { fill: '#2a2a2a', id: 1022 }); ink(ellPts(P(0, -238), 4 * s, 4 * s, 8), { fill: '#6a8ac8', w: 1, id: 1023 });
+  const sr = [...P(-120, -214), 240 * s, 180 * s];
+  screen(...sr, 6 * s, content, { crt: true });
+  return { screen: sr, cam: P(0, -238) };
+}
+// The 2004 video player: a window, a picture, a bar along the bottom.
+function player04(w, h, u, f, paused, title, pic) {
+  ctx.fillStyle = '#3a6ad0'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#e8e4dc'; ctx.fillRect(w * .04, h * .06, w * .92, h * .88);
+  ctx.fillStyle = '#2a5ac0'; ctx.fillRect(w * .04, h * .06, w * .92, h * .1);
+  text(title, w * .07, h * .135, `bold ${h * .06}px ${SANS}`, '#fff', 'left');
+  ctx.save(); ctx.beginPath(); ctx.rect(w * .07, h * .19, w * .86, h * .58); ctx.clip(); ctx.translate(w * .07, h * .19); pic(w * .86, h * .58); ctx.restore();
+  ctx.fillStyle = '#bbb'; ctx.fillRect(w * .2, h * .84, w * .7, h * .03); ctx.fillStyle = '#3a8a3a'; ctx.fillRect(w * .2, h * .84, w * .7 * f, h * .03);
+  ctx.fillStyle = '#4a4a4a';
+  if (paused) { ctx.beginPath(); ctx.moveTo(w * .08, h * .8); ctx.lineTo(w * .14, h * .855); ctx.lineTo(w * .08, h * .91); ctx.fill(); }
+  else { ctx.fillRect(w * .08, h * .8, w * .02, h * .1); ctx.fillRect(w * .12, h * .8, w * .02, h * .1); }
+  if (paused) { ctx.fillStyle = 'rgba(255,255,255,.75)'; ctx.fillRect(w * .44, h * .36, w * .04, h * .2); ctx.fillRect(w * .52, h * .36, w * .04, h * .2); }
+}
+function volcano(w, h, u, f) {
+  ctx.fillStyle = '#9ad0f0'; ctx.fillRect(0, 0, w, h);
+  ink([[w * .1, h], [w * .42, h * .35], [w * .58, h * .35], [w * .9, h]], { fill: '#7a5a3a', w: 2, id: 1030 });
+  ctx.fillStyle = '#e84a1a'; ctx.fillRect(w * .48, h * .4, w * .04, h * .6);
+  const e = f; for (let i = 0; i < 7; i++) { const a = -Math.PI / 2 + (i - 3) * .3, rr = e * h * .4; ink(ellPts([w / 2 + Math.cos(a) * rr, h * .33 + Math.sin(a) * rr], 6 + e * 6, 6 + e * 6, 8), { fill: i % 2 ? '#f0a020' : '#e84a1a', stroke: false, id: 1031 + i }); }
+  ctx.fillStyle = 'rgba(80,70,70,.5)'; ctx.beginPath(); ctx.ellipse(w / 2 + e * 20, h * .12, w * .12 * e, h * .1 * e, 0, 0, 7); ctx.fill();
+}
+// S12 — 2004: Linda's son Max. She brings a snack; he presses pause.
+function shotPause(u) {
+  const q = twos(u);
+  const z = K(u, [[0, 4.1], [1.2, 4.1], [5.4, 1]], x => easeOut(x));
+  CAM = { x: K(u, [[0, 300], [1.2, 300], [5.4, 600], [15, 620], [19, 760]]), y: K(u, [[0, 336], [1.2, 336], [5.4, 440], [15, 440], [19, 420]]), z: z * K(u, [[0, 1.35], [15, 1.35], [19, 1.6]]) };
+  const paused = within(u, 10.8, 14.2);
+  const prog = clamp((Math.min(u, 10.8) + Math.max(0, u - 14.2)) / 40);
+  layer(1, () => {
+    bedroom04(u);
+    // the desk
+    box(140, 470, 420, 16, { fill: '#c9b08a', id: 1040 });
+    for (const lx of [160, 530]) box(lx - 8, 486, 14, 110, { fill: '#a89070', id: 1041 + lx });
+    crt04(300, 470, 1, (w, h) => player04(w, h, u, prog, paused, 'Lesson 5.14 · Volcanoes', (pw, ph) => volcano(pw, ph, u, frac(prog * 6))));
+    box(420, 462, 26, 10, { fill: '#e8e4dc', id: 1045 });
+    // Linda comes in with a tray, as her mother once did
+    const lx = K(u, [[0, 1400], [8.4, 1400], [10.8, 800]], easeOut);
+    const lw = walk(1400 - lx, ADULT, 34, 8);
+    let tray = null;
+    if (lx < 1390) person({ ...LINDA04, x: lx, y: 640 - 98 * 1.4 + (u < 10.8 ? lw.bob * 1.4 : 0), s: 1.4, d: -1, feet: u < 10.8 ? lw.feet : null,
+      hands: [[44, 40], [38, 44]], tilt: u > 14 ? .18 : .05, mouth: within(u, 10.2, 11.4) ? 'talk' : 'smile', brow: u > 15 ? .6 : 0, blink: within(u, 16.5, 16.7), t: u, id: 1800,
+      prop: o => { tray = mid(o.hands[0], o.hands[1]); snackTray(tray, u > 12.3 ? 2 : 3, 1810); } });
+    // Max at the desk: pause; turn; a cookie; turn back; play
+    const turned = within(u, 11.2, 13.6), clickT = within(u, 10.6, 11.1) || within(u, 13.7, 14.2);
+    box(600, 520, 70, 12, { fill: '#3a3a3a', id: 1046 }); ink([[634, 532], [634, 600]], { w: 5, stroke: '#3a3a3a', id: 1047 }); ink([[680, 440], [676, 530]], { w: 6, stroke: '#3a3a3a', id: 1048 });
+    const take = within(u, 11.8, 12.4) && tray ? [tray[0] + 4, tray[1] - 12] : null;
+    person({ ...MAX, x: 640, y: 516, s: 1.35, d: -1, lean: turned ? 0 : .1, feet: SEAT_FEET(KID), headD: turned ? 1 : null, turn: turned ? .45 : 0,
+      hands: turned ? [[-30, 26], [20, 40]] : [[40, 18], [30, 30]], handsAbs: take ? [take, null] : turned ? null : [clickT ? [432, 468] : [440, 466], null],
+      mouth: turned ? 'grin' : 'flat', blink: within(u, 3, 3.15) || within(u, 17, 17.15), t: q, id: 1700,
+      prop: o => { if (turned && u > 12.3) ink(ellPts(o.hands[0], 8, 4, 8), { fill: '#b07a3a', w: 1.2, id: 1790 }); } });
+  });
+  yearCard(u, '2004', 'Homework, again');
+}
+// S13 — Max makes his report on volcanoes, in front of the camera on his monitor.
+function shotReport(u) {
+  const q = twos(u);
+  if (u > 9) return reportScreen(u - 9);
+  CAM = { x: 600, y: 430, z: 1.3 };
+  layer(1, () => {
+    bedroom04(u);
+    box(140, 470, 420, 16, { fill: '#c9b08a', id: 1040 });
+    for (const lx of [160, 530]) box(lx - 8, 486, 14, 110, { fill: '#a89070', id: 1041 + lx });
+    const cr = crt04(300, 470, 1, (w, h) => { ctx.fillStyle = '#7a90b2'; ctx.fillRect(0, 0, w, h); ctx.fillStyle = '#4a6a9a'; ctx.beginPath(); ctx.ellipse(w * .5, h * .9, w * .2, h * .4, 0, 0, 7); ctx.fill(); ctx.fillStyle = '#f0caa8'; ctx.beginPath(); ctx.arc(w * .5, h * .4, h * .15, 0, 7); ctx.fill(); ctx.fillStyle = Math.floor(u * 2) % 2 ? '#e82a2a' : '#7a2a2a'; ctx.beginPath(); ctx.arc(w * .1, h * .1, 6, 0, 7); ctx.fill(); text('REC', w * .15, h * .13, `bold ${h * .08}px ${SANS}`, '#fff', 'left'); });
+    void cr;
+    // the volcano: crouch, hands together over his head; then erupt
+    const crouch = K(u, [[0, 0], [1.5, 0], [2.6, 1], [3.6, 1], [3.9, -.2], [4.6, -.6], [5.2, 0], [5.6, .25], [6.2, 0]]);
+    const air = Math.max(0, -crouch) * 70;
+    const arms = u < 3.7 ? [[-6, -58], [-2, -60]] : u < 6.2 ? [[-58, -30], [56, -34]] : [[10, 46], [-10, 46]];
+    const bow = K(u, [[0, 0], [6.6, 0], [7.2, .5], [8, 0]]);
+    person({ ...MAX, x: 820, y: 640 - 64 * 1.4 + Math.max(0, crouch) * 26 - air, s: 1.4, d: -1, lean: Math.max(0, crouch) * .25 + bow, tilt: crouch > .5 ? .2 : -.1,
+      feet: crouch > 0 ? [[14 + crouch * 8, 64 - crouch * 18], [-12 - crouch * 6, 64 - crouch * 18]] : [[8, 64 + air * .2], [-8, 62 + air * .2]],
+      hands: arms, elbowOut: u > 3.7 && u < 6.2, mouth: within(u, 3.8, 5.6) ? 'o' : 'grin', wide: within(u, 3.8, 5) ? 1 : 0, blink: within(u, 7.4, 7.6), t: q, id: 1700 });
+    if (within(u, 3.8, 6)) for (let i = 0; i < 6; i++) { const a = -Math.PI / 2 + (i - 2.5) * .35, f = seg(u, 3.8, 6), rr = 60 + f * 120; ink(ellPts([820 - 40 + Math.cos(a) * rr, 330 - air + Math.sin(a) * rr * .8 + f * f * 120], 8, 8, 8), { fill: i % 2 ? '#f0a020' : '#e84a1a', stroke: false, id: 1850 + i }); }
+  });
+}
+function reportScreen(v) {
+  CAM = { x: 640, y: 360, z: 1 };
+  ctx.fillStyle = '#d9d6cc'; ctx.fillRect(0, 0, W, H);
+  screen(90, 50, 1100, 620, 14, (w, h) => player04(w, h, v, clamp(v / 6), v > 6, 'My Report: Volcanoes — Max, Grade 5', (pw, ph) => {
+    ctx.fillStyle = '#8ea4c4'; ctx.fillRect(0, 0, pw, ph);
+    person({ ...MAX, x: pw * .5, y: ph * .78, s: 2.6, d: -1, turn: .8, lean: 0, hands: v < 2 ? [[-6, -58], [-2, -60]] : [[-40, -50], [36, -54]], elbowOut: v >= 2, mouth: v < 2 ? 'grin' : 'o', t: v, id: 1700 });
+  }), { crt: true });
+  if (v > 6.2) {
+    ctx.save(); ctx.globalAlpha = ease(seg(v, 6.2, 6.8));
+    box(380, 300, 520, 110, { fill: '#f8f6f0', w: 2, id: 1890 });
+    text('✓  Sent to Mrs. Park', 640, 368, `bold 34px ${SANS}`, '#2a7a3a');
+    ctx.restore();
+  }
+}
+
+// ---------- 2026 ----------
+// S14 — 2026: the same room. Lessons at any speed; Ms. Reyes on her knees.
+function cushion(x, y, col, id) { ink(ellPts([x, y], 62, 18, 12), { fill: col, w: 2, id, still: true }); }
+function tablet(c, a, s, content, id) {
+  ctx.save(); ctx.translate(c[0], c[1]); ctx.rotate(a);
+  box(-30 * s, -22 * s, 60 * s, 44 * s, { fill: '#2a2a2e', w: 1.6, id });
+  ctx.save(); ctx.beginPath(); ctx.rect(-26 * s, -18 * s, 52 * s, 36 * s); ctx.clip(); ctx.translate(-26 * s, -18 * s); content(52 * s, 36 * s); ctx.restore();
+  ctx.restore();
+}
+const TAB26 = [
+  (w, h, u) => { ctx.fillStyle = '#ff9a4a'; ctx.fillRect(0, 0, w, h); ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(w * (.3 + .4 * frac(u * .3)), h * .5, h * .2, 0, 7); ctx.fill(); },
+  (w, h, u) => { ctx.fillStyle = '#4ab0e0'; ctx.fillRect(0, 0, w, h); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); for (let x = 0; x < w; x += 2) ctx.lineTo(x, h / 2 + Math.sin(x * .3 + u * 4) * h * .2); ctx.stroke(); },
+  (w, h, u) => { ctx.fillStyle = '#7ac05a'; ctx.fillRect(0, 0, w, h); text('b a t', w / 2, h * .66, `bold ${h * .4}px ${SANS}`, '#fff'); void u; },
+  (w, h, u) => { ctx.fillStyle = '#c86ad0'; ctx.fillRect(0, 0, w, h); for (let i = 0; i < 4; i++) { ctx.fillStyle = '#fff'; ctx.fillRect(w * .15 + i * w * .19, h * (.8 - .15 * i - .05 * Math.sin(u + i)), w * .12, h * (.15 * i + .1)); } },
+];
+function shotNow(u) {
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 580], [16, 700]]), y: 500, z: K(u, [[0, 1.2], [16, 1.26]]) };
+  layer(.85, () => { room4(ERA26, u, { time: 13.3 }); sunbeam(.16); });
+  layer(1, () => {
+    // children on cushions and at the round table, each on a different lesson
+    cushion(300, 660, '#e8604a', 2700); cushion(560, 690, '#4a90c8', 2701);
+    box(860, 540, 180, 12, { fill: '#e8d4b0', id: 2702 }); ink([[950, 552], [950, 640]], { w: 8, stroke: '#c8b490', id: 2703 }); ink(ellPts([950, 644], 50, 9, 10), { fill: '#c8b490', w: 1.4, id: 2704 });
+    for (const [C, x, d, k, id] of [[KIDS26[2], 840, 1, 2, 2710], [KIDS26[3], 1060, -1, 3, 2740]]) {
+      box(x - 22, 586, 44, 8, { fill: '#e0c8a0', id: id + 90 }); ink([[x, 594], [x, 650]], { w: 5, stroke: '#a89070', id: id + 91 });
+      person({ ...C, x, y: 582, s: 1.15, d, lean: .12, tilt: .2, feet: SEAT_FEET(KID), hands: [[34, 22], [28, 26]], mouth: 'flat', blink: within(u, 3 + k * 2, 3.15 + k * 2), t: q, id });
+    }
+    tablet([905, 520], -.25, 1.05, (w, h) => TAB26[2](w, h, u), 2760); tablet([995, 520], .25, 1.05, (w, h) => TAB26[3](w, h, u), 2761);
+    person({ ...KIDS26[0], x: 300, y: 640, s: 1.2, d: 1, lean: .25, tilt: .3, feet: [[KID.th * .7, 14], [KID.th * .35, 18]], hands: [[28, 30], [22, 34]], mouth: 'flat', blink: within(u, 7, 7.15), t: q, id: 2770,
+      prop: o => tablet(mid(o.hands[0], o.hands[1]), -.5, 1.1, (w, h) => TAB26[0](w, h, u), 2771) });
+    person({ ...JUNE, x: 560, y: 670, s: 1.2, d: -1, lean: .25, tilt: .3, feet: [[KID.th * .7, 14], [KID.th * .35, 18]], hands: [[28, 30], [22, 34]], mouth: 'flat', blink: within(u, 10, 10.15), t: q, id: 2790,
+      prop: o => tablet(mid(o.hands[0], o.hands[1]), .5, 1.1, (w, h) => TAB26[1](w, h, u), 2791) });
+    // Ms. Reyes: kneeling by one child, then up (a hand to her back), then down beside the next
+    const rx = K(u, [[0, 410], [7, 410], [10, 700], [16, 700]]);
+    const kneel = K(u, [[0, 1], [6, 1], [7, 0], [10, 0], [11, 1]]);
+    const s = 1.35, w = walk(rx - 410, ADULT, 36, 9);
+    person({ ...REYES, x: rx, y: lerp(690 - 98 * s + w.bob * s, 690 - (ADULT.th + 4) * s, kneel), s, d: u < 7 ? -1 : u < 10 ? 1 : -1, lean: kneel * .3 + (within(u, 7, 8) ? -.15 : 0), tilt: .15,
+      feet: kneel > .5 ? KNEEL_FEET(ADULT) : within(u, 7.6, 10) ? w.feet : null, hands: within(u, 6.8, 8.2) ? [[-30, 40], [-34, 44]] : kneel > .5 ? [[30, 46], [-10, 60]] : null,
+      mouth: within(u, 6.8, 7.8) ? 'flat' : 'talk', t: u, id: 2800, blink: within(u, 4, 4.15) });
+  });
+  yearCard(u, '2026', 'Room 4');
+}
+// S15 — June is sent to the closet for a cable, and finds the box.
+function shotCloset(u) {
+  const q = twos(u);
+  if (u > 12.4) return coverInsert(u - 12.4);
+  CAM = { x: K(u, [[0, 980], [6, 990], [12, 960]]), y: K(u, [[0, 420], [6, 430], [12, 450]]), z: K(u, [[0, 1.7], [12, 1.62]]) };
+  const door = K(u, [[0, 0], [.4, 0], [1.6, 1]]);
+  const boxOff = K(u, [[0, 0], [4.6, 0], [5.4, 1]], easeIn);
+  const onFloor = u > 7.6;
+  layer(1, () => {
+    room4(ERA26, u, { time: 13.4, door, inside: (x, y, w, h) => {
+      ink([[x + 20, y + h * .8], [x + 60, y + h * .8 - 30], [x + 90, y + h * .8]], { w: 3, stroke: '#2a2a2a', id: 2850 });
+      if (u < 5.4) bookBox(x + 72 + boxOff * 20, y + h * .55 + 4, 100, 70, { flaps: 1, label: 1, dusty: true, still: true });
+    } });
+    sunbeam(.14);
+    // June
+    const reach = K(u, [[0, 0], [2.6, 0], [3.6, 1], [5.2, 1], [5.6, .6], [6.4, 0]]);
+    const kneel = K(u, [[0, 0], [6.6, 0], [7.6, 1]]);
+    const s = 1.4, jx = 960;
+    const grab = within(u, 5.2, 7.6), give = within(u, 5.9, 6.4) ? Math.sin(seg(u, 5.9, 6.4) * Math.PI) : 0;
+    const boxPos = u < 5.4 ? null : u < 5.9 ? [lerp(1122, 1035, seg(u, 5.4, 5.9)), lerp(378, 545, easeIn(seg(u, 5.4, 5.9)))] : u < 6.4 ? [1035, 545 + give * 10] : onFloor ? [1100, 652] : mix([1035, 545], [1100, 652], ease(seg(u, 6.4, 7.6)));
+    const hands = grab && boxPos ? [[boxPos[0] - 40, boxPos[1] - 40], [boxPos[0] + 44, boxPos[1] - 44]] : null;
+    const handsRel = kneel > .5 ? (u > 9 ? [[40, 44], [36, 50]] : [[50, 60], [44, 64]]) : [[lerp(10, 26, reach), lerp(46, -60, reach)], [lerp(-4, 18, reach), lerp(48, -54, reach)]];
+    const swipe = within(u, 10, 12.4) ? Math.sin((u - 10) * 6) * 10 : 0;
+    person({ ...JUNE, x: jx, y: lerp(640 - 64 * s - (reach > .7 ? 8 : 0), 640 - (KID.th + 2) * s, kneel) + give * 8, s, d: 1, lean: kneel * .2 - reach * .05, tilt: reach > .3 ? -.35 : u > 8 ? .35 : 0,
+      tiptoe: reach > .7 && kneel < .2, feet: kneel > .5 ? KNEEL_FEET(KID) : reach > .7 ? [[4, 70], [-4, 70]] : null,
+      handsAbs: hands || (u > 9.2 ? null : null), hands: handsRel.map((h, i) => i === 0 ? [h[0] + swipe, h[1]] : h),
+      mouth: within(u, 5.6, 6.6) ? 'o' : u > 10 ? 'flat' : 'smile', wide: within(u, 5.5, 6.6) ? 1 : 0, brow: u > 10.5 ? 1 : 0, elbowOut: reach > .5, blink: within(u, 2, 2.15), t: q, id: 2790,
+      prop: () => {
+        if (boxPos && !onFloor) bookBox(boxPos[0], boxPos[1], 100, 70, { flaps: 1, label: 1, dusty: true });
+        if (u > 9.2) { const c = [1020, 588]; ctx.save(); ctx.translate(c[0], c[1]); ctx.rotate(-.2); box(-30, -40, 60, 80, { fill: '#3f6a4a', w: 2, id: 2860 }); text('ARITHMETIC', 0, -10, `bold 8px ${SERIF}`, '#e8d8a0'); text('3', 0, 14, `bold 18px ${SERIF}`, '#e8d8a0'); ctx.restore(); }
+      } });
+    if (onFloor) bookBox(1100, 652, 100, 70, { flaps: K(u, [[7.2, 1], [8.6, 0]]), books: u > 8.6, label: 1, dusty: true });
+    if (within(u, 5.8, 7.6)) { const f = seg(u, 5.8, 7.6); ctx.save(); ctx.globalAlpha = .5 * (1 - f); ctx.fillStyle = '#e8e0d0'; for (let i = 0; i < 8; i++) { ctx.beginPath(); ctx.arc(1040 + Math.cos(i) * (30 + f * 70), 440 + Math.sin(i * 1.7) * (20 + f * 40) - f * 20, 14 + f * 22, 0, 7); ctx.fill(); } ctx.restore(); }
+  });
+}
+function coverInsert(v) {
+  CAM = { x: 640, y: 360, z: 1 };
+  ctx.fillStyle = '#c9a878'; ctx.fillRect(0, 0, W, H);
+  dabs(0, 0, W, H, '#a88858', 60, 2901, 30, 160, .25);
+  ctx.save(); ctx.translate(640, 380); ctx.rotate(-.03);
+  box(-520, -280, 520, 560, { fill: '#2f5a3e', w: 2, id: 2902 });
+  box(-500, -262, 490, 524, { fill: '#e8dcc0', w: 1.5, id: 2903 });
+  box(0, -280, 500, 560, { fill: '#f2ead6', w: 2, id: 2904 });
+  // the bookplate, and a name in pencil
+  box(-420, -170, 330, 210, { fill: '#f6f0e0', stroke: '#6a5a40', w: 2, id: 2905 });
+  text('THIS BOOK BELONGS TO', -255, -130, `bold 16px ${SERIF}`, '#6a5a40');
+  text('Danny Kowalski', -255, -60, `40px ${HAND}`, '#3a3a3a');
+  text('Room 4   1962', -255, 0, `32px ${HAND}`, '#3a3a3a');
+  // page one
+  text('Lesson 1', 250, -200, `bold 30px ${SERIF}`, '#3a3a3a');
+  text('Counting by Nines', 250, -160, `italic 24px ${SERIF}`, '#3a3a3a');
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 9; c++) ink(ellPts([90 + c * 36, -100 + r * 36], 10, 10, 8), { fill: '#d8503a', w: 1.2, still: true, id: 2906 + r * 9 + c });
+  ctx.fillStyle = 'rgba(60,60,60,.55)'; for (let l = 0; l < 6; l++) ctx.fillRect(60, 30 + l * 28, 380 - (l % 3) * 40, 5);
+  ctx.restore();
+  // June's finger: it taps, waiting for something to happen
+  const tap = Math.abs(Math.sin(v * 5)) * (v < 2 ? 1 : 0);
+  armIn([640 + 210, 380 - 64 - tap * 14], [980, 900], JUNE.skin, JUNE.skin, false, 2950);
+}
+// S16 — "How do you make it play?" "It doesn't play. It waits for you."
+function shotWaits(u) {
+  const q = twos(u);
+  CAM = { x: K(u, [[0, 960], [10, 950], [15, 820]]), y: K(u, [[0, 520], [10, 520], [15, 470]]), z: K(u, [[0, 1.7], [10, 1.8], [15, 1.3]]) };
+  layer(.85, () => { room4(ERA26, u, { time: 13.5, door: 1, inside: () => {} }); sunbeam(.18); });
+  layer(1, () => {
+    // the other children, still at their lessons
+    cushion(300, 660, '#e8604a', 2700);
+    person({ ...KIDS26[0], x: 300, y: 640, s: 1.2, d: 1, lean: .25, tilt: .3, feet: [[KID.th * .7, 14], [KID.th * .35, 18]], hands: [[28, 30], [22, 34]], mouth: 'flat', t: q, id: 2770, prop: o => tablet(mid(o.hands[0], o.hands[1]), -.5, 1.1, (w, h) => TAB26[0](w, h, u), 2771) });
+    bookBox(1100, 652, 100, 70, { flaps: 0, books: true, label: 1, dusty: true });
+    // June with the book on her lap
+    const look = within(u, .4, 5.6) ? 1 : 0, page = seg(u, 7.4, 8.6);
+    person({ ...JUNE, x: 870, y: 640, s: 1.4, d: 1, lean: look ? .05 : .3, tilt: look ? -.25 : .35, feet: [[KID.th * .7, 14], [KID.th * .35, 18]], hands: [[40, 36], [33, 40]], turn: look ? .3 : 0,
+      mouth: within(u, 1, 4.6) ? 'talk' : u > 9.4 ? 'smile' : 'flat', t: u, blink: within(u, 6, 6.15) || within(u, 12, 12.15), id: 2790,
+      prop: o => { const c = mid(o.hands[0], o.hands[1]); ctx.save(); ctx.translate(c[0], c[1] - 6); ctx.rotate(.1); box(-40, -8, 80, 14, { fill: '#f2ead6', id: 2990 }); box(-42, 4, 84, 6, { fill: '#2f5a3e', id: 2991 }); if (page > 0 && page < 1) ink([[0, -8], [Math.cos(page * Math.PI) * 40, -8 - Math.sin(page * Math.PI) * 30]], { w: 3, stroke: '#e8dcc0', id: 2992 }); ctx.restore(); } });
+    // Ms. Reyes kneels beside her
+    const kx = K(u, [[0, 1240], [2.4, 1240], [4.4, 1058]], easeOut), kneel = ease(seg(u, 4.2, 5.2)), s = 1.4, w = walk(1240 - kx, ADULT, 36, 9);
+    const pt = seg(u, 7.2, 8.6), turning = within(u, 6.8, 9);
+    person({ ...REYES, x: kx, y: lerp(650 - 98 * s + w.bob * s, 650 - (ADULT.th + 4) * s, kneel), s, d: -1, lean: kneel * (turning ? .42 : .22), tilt: turning ? .1 : .2, feet: kneel > .5 ? KNEEL_FEET(ADULT) : u < 4.4 ? w.feet : null,
+      hands: kneel > .5 ? [[24, 62], [14, 62]] : null, handsAbs: turning ? [[lerp(972, 930, ease(pt)), 592 - Math.sin(pt * Math.PI) * 26], null] : null, mouth: within(u, 5.4, 9) ? 'talk' : 'smile', t: u, blink: within(u, 10, 10.15), id: 2800 });
+  });
+}
+
+// S17 — Coda: the school at dusk; the tree planted in 1962 fills the yard; Room 4's window is lit.
+function shotCoda(u) {
+  CAM = { x: K(u, [[0, 700], [14, 640]]), y: K(u, [[0, 420], [14, 380]]), z: K(u, [[0, 1.5], [14, 1.05]]) };
+  const hz = 470, dusk = clamp(u / 10);
+  layer(.05, () => {
+    const g = ctx.createLinearGradient(0, -200, 0, hz); g.addColorStop(0, mixC('#6a86b4', '#2a3260', dusk)); g.addColorStop(1, mixC('#f2d0a0', '#e09a70', dusk));
+    ctx.fillStyle = g; ctx.fillRect(-800, -600, W + 1600, 1100);
+    // a jet, very high, where the broadcasting plane used to circle
+    const jx = K(u, [[0, 1400], [14, -200]], x => x);
+    ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(jx, 90); ctx.lineTo(jx + 260, 96); ctx.stroke();
+    ctx.fillStyle = '#e8e8f0'; ctx.beginPath(); ctx.ellipse(jx, 90, 5, 1.6, 0, 0, 7); ctx.fill();
+  });
+  layer(.3, () => { ctx.fillStyle = '#6a7a5a'; ctx.fillRect(-800, hz - 6, W + 1600, 20); dabs(-800, hz - 26, W + 1600, 26, '#4a5a3a', 60, 9, 14, 40, .8); ctx.fillStyle = '#5a6a3a'; ctx.fillRect(-800, hz + 8, W + 1600, 800); });
+  layer(.6, () => {
+    // the same school, older; Room 4's window glows
+    const P = (lx, ly) => [780 + lx * .9, hz + 50 + ly * .9];
+    box(...P(-260, -120), 520 * .9, 120 * .9, { fill: '#8a4a40', w: 2, id: 3040 });
+    box(...P(-270, -132), 540 * .9, 14 * .9, { fill: '#c8c0b0', id: 3042 });
+    for (let i = 0; i < 8; i++) { if (i === 4) continue; box(...P(-236 + i * 60, -96), 40 * .9, 52 * .9, { fill: i === 6 ? '#ffd890' : '#4a5a6a', w: 1.5, id: 3043 + i }); }
+    glow(...P(-236 + 6 * 60 + 20, -70), 130, 'rgba(255,205,130,.9)', .8 * dusk + .2);
+    box(...P(-6, -86), 40 * .9, 86 * .9, { fill: '#5a3a2a', id: 3052 });
+    // a reader in the lit window
+    const wp = P(-236 + 6 * 60 + 20, -62); ctx.fillStyle = 'rgba(40,30,30,.75)'; ctx.beginPath(); ctx.arc(wp[0] - 4, wp[1] - 8, 6, 0, 7); ctx.arc(wp[0] - 9, wp[1] - 14, 3.5, 0, 7); ctx.arc(wp[0] + 1, wp[1] - 14, 3.5, 0, 7); ctx.fill(); ctx.fillRect(wp[0] - 9, wp[1] - 2, 12, 14); ctx.fillStyle = 'rgba(250,245,230,.9)'; ctx.fillRect(wp[0] - 2, wp[1] + 1, 10, 6);
+    tree(ERA26, P(240, 0)[0] + 90, P(0, 0)[1] + 20, 1.05, u, 4026);
+  });
+  layer(1.4, () => { ctx.fillStyle = 'rgba(30,25,20,.5)'; for (let i = 0; i < 9; i++) { const x = -200 + i * 190; ctx.fillRect(x, 640, 6, 120); } ctx.fillRect(-300, 660, W + 600, 5); });
+  const a = ease(seg(u, 8.6, 10.4));
+  if (a > 0) { ctx.save(); ctx.globalAlpha = a; ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 14; text('Room 4', W / 2, 200, `76px ${SERIF}`, '#fbf4e2'); text('1962 – 2026', W / 2, 246, `italic 28px ${SERIF}`, '#efe2c8'); ctx.restore(); }
+}
+
+// ---------- the exposure sheet ----------
+const SHOTS = [
+  { dur: 8, draw: shotTitle, caps: [] },
+  { dur: 14, draw: shotPlane, caps: [[1, 6.4, 'In 1961 an airplane began circling over Indiana, broadcasting lessons to the schools below.'], [7, 12.4, 'In this history the experiment never ended, and television replaced the textbook wherever it could.']] },
+  { dur: 13.5, draw: shotPacking, caps: [[.8, 6, 'At Maple Street School, Miss Halloran packed the arithmetic books into a box for the closet.'], [7.4, 12.6, 'In their place came a television on a tall cart.']] },
+  { dur: 14.5, draw: shotWatch, caps: [[.8, 5.6, 'The teacher on the screen could not see the class.'], [7.6, 12.6, 'His lesson went on at the same speed for everyone.']] },
+  { dur: 16.5, draw: shotKneel, caps: [[.6, 5.6, 'So Miss Halloran stopped teaching from the front of the room, and went to whoever was lost.'], [7, 11.6, 'Seven rows of nine. Danny counted them himself.'], [12.4, 14.8, 'Her job had become a tutor’s.']] },
+  { dur: 12, draw: shotStreet, caps: [[1.6, 8, 'By 1975 the lessons came home too. Channel 7 replayed the school day every afternoon at four.']] },
+  { dur: 20, draw: shotHomework, caps: [[.8, 6.6, 'Homework was watching. Linda’s notebook had no questions in it, only her answers.'], [9, 13.6, 'Her little brother had other plans for the television.']] },
+  { dur: 15, draw: shotSnack, caps: [[.6, 3.6, 'Then her mother came in with a snack.'], [8.8, 13.2, 'Television did not wait. The answer would come round again next Tuesday.']] },
+  { dur: 15, draw: shotScreens88, caps: [[1.6, 6.8, 'By 1988 Room 4 had a screen for every child, and a shelf of videotapes.'], [7.6, 13.4, 'Mrs. Halloran was still there. She had not stood at the front of the room in twenty-six years.']] },
+  { dur: 13, draw: shotRewind, caps: [[.4, 4, 'A tape could be stopped and rewound, as often as it took.'], [7.4, 11.6, 'So no two children were on the same lesson any more.']] },
+  { dur: 14.5, draw: shotSpelling, caps: [[.4, 6.4, 'Some raced a year ahead. Some were stuck on one tape for a week.'], [7.6, 13.8, 'They could explain photosynthesis, with diagrams. Fewer of them could spell it.']] },
+  { dur: 20.5, draw: shotPause, caps: [[1.8, 7.4, 'Linda grew up and had a son, Max. He did his homework on a computer.'], [8.6, 12.6, 'When she brought him a snack, he pressed pause.'], [14.4, 18.6, 'The lesson waited for him. Linda found she was a little jealous.']] },
+  { dur: 16, draw: shotReport, caps: [[.6, 6.6, 'Hardly anyone wrote reports any more. They made them, and sent them in to be watched.'], [9.6, 15.4, 'Max finished fifth-grade science in February, and simply started sixth.']] },
+  { dur: 17, draw: shotNow, caps: [[1.6, 8, 'By 2026 any lesson in the country could be watched at any speed, in any order, as often as you liked.'], [9, 15.4, 'Ms. Reyes spent most of the day on her knees, beside one child and then another.']] },
+  { dur: 17, draw: shotCloset, caps: [[.6, 5.4, 'One afternoon June was sent to the closet for a charging cable.'], [8.6, 12.2, 'She found something else.'], [12.8, 15.8, 'Inside the cover was a name.']] },
+  { dur: 16.5, draw: shotWaits, caps: [[.6, 4.6, '“How do you make it play?” June asked.'], [5.4, 9.6, '“It doesn’t play,” said Ms. Reyes. “It waits for you.”']] },
+  { dur: 18, draw: shotCoda, caps: [[1.2, 7.4, 'After that, the box stayed out of the closet, and nobody needed to be told what it was for.']] },
+];
+// Reading time: every caption stays up long enough to read (about 175 words a minute).
+// Where the action under a caption is shorter than that, it first plays slower (up to
+// STRETCH times), then holds its last pose for whatever time is still needed.
+const READ = text => 1.2 + text.split(/\s+/).length / 2.9, STRETCH = 1.5;
+for (const S of SHOTS) {
+  const knots = [[0, 0]]; let real = 0, story = 0;
+  S.realCaps = [];
+  for (const [a, b, text] of S.caps) {
+    real += a - story; story = a; knots.push([story, real]);
+    const ra = real, avail = b - a, need = READ(text), k = Math.min(STRETCH, Math.max(1, need / avail));
+    real += avail * k; story = b; knots.push([story, real]);
+    if (need > avail * k) { real += need - avail * k; knots.push([story, real]); }
+    S.realCaps.push([ra, real, text]);
+  }
+  real += S.dur - story; knots.push([S.dur, real]);
+  S.knots = knots; S.real = real;
+}
+// Map time on the screen to time in the shot's own action.
+function storyTime(S, r) {
+  const k = S.knots;
+  for (let i = 1; i < k.length; i++) if (r <= k[i][1]) { const [s0, r0] = k[i - 1], [s1, r1] = k[i]; return r1 > r0 ? s0 + (s1 - s0) * (r - r0) / (r1 - r0) : s1; }
+  return S.dur;
+}
+const TOTAL = SHOTS.reduce((a, s) => a + s.real, 0);
+
+function wrap(text, max) {
+  const words = text.split(' '), lines = []; let line = '';
+  for (const w of words) { const t = line ? line + ' ' + w : w; if (ctx.measureText(t).width > max && line) { lines.push(line); line = w; } else line = t; }
+  if (line) lines.push(line);
+  return lines;
+}
+function caption(text, a) {
+  ctx.save(); ctx.globalAlpha = a;
+  const g = ctx.createLinearGradient(0, H - 200, 0, H); g.addColorStop(0, 'rgba(15,12,10,0)'); g.addColorStop(.5, 'rgba(15,12,10,.5)'); g.addColorStop(1, 'rgba(15,12,10,.75)');
+  ctx.fillStyle = g; ctx.fillRect(0, H - 200, W, 200);
+  ctx.font = 'italic 27px ' + SERIF; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  const lines = wrap(text, 1000); let y = H - 46 - (lines.length - 1) * 36;
+  ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 8; ctx.fillStyle = '#f5ecdb';
+  for (const l of lines) { ctx.fillText(l, W / 2, y); y += 36; }
+  ctx.restore();
+}
+const GRAIN = [0, 1, 2].map(k => {
+  const c = document.createElement('canvas'); c.width = 320; c.height = 180;
+  const g = c.getContext('2d'), im = g.createImageData(320, 180), r = R(55 + k);
+  for (let i = 0; i < im.data.length; i += 4) { const v = 205 + r() * 50; im.data[i] = v; im.data[i + 1] = v * .985; im.data[i + 2] = v * .95; im.data[i + 3] = 255; }
+  g.putImageData(im, 0, 0); return c;
+});
+
+function render(t) {
+  BOIL = Math.floor(t * 8);
+  let acc = 0, i = 0;
+  while (i < SHOTS.length - 1 && t >= acc + SHOTS[i].real) { acc += SHOTS[i].real; i++; }
+  const S = SHOTS[i], r = t - acc, u = storyTime(S, r);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cvs.width, cvs.height);
+  ctx.setTransform(VIEW.k, 0, 0, VIEW.k, VIEW.ox, VIEW.oy);
+  ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
+  ctx.save(); S.draw(u); ctx.restore();
+  ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.globalAlpha = .4; ctx.drawImage(GRAIN[BOIL % 3], 0, 0, W, H); ctx.restore();
+  const v = ctx.createRadialGradient(W / 2, H / 2, H * .45, W / 2, H / 2, H * 1.05);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(10,6,3,.45)'); ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+  const fade = Math.max(0, 1 - r / .5, 1 - (S.real - r) / .5);
+  if (fade > 0) { ctx.fillStyle = `rgba(18,15,12,${fade})`; ctx.fillRect(0, 0, W, H); }
+  for (const [a, b, text] of S.realCaps) {
+    if (r > a && r < b) caption(text, Math.min(1, (r - a) / .35, (b - r) / .35));
+  }
+  ctx.restore();
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2), cw = innerWidth, ch = innerHeight;
+  cvs.width = Math.round(cw * dpr); cvs.height = Math.round(ch * dpr);
+  cvs.style.width = cw + 'px'; cvs.style.height = ch + 'px';
+  const k = Math.min(cw / W, ch / H) * dpr;
+  VIEW = { k, ox: (cvs.width - W * k) / 2, oy: (cvs.height - H * k) / 2 };
+}
+const FIX = new URLSearchParams(location.search).get('t');
+if (new URLSearchParams(location.search).has('debug')) {
+  let a = 0; const msg = 'TOTAL ' + TOTAL.toFixed(1) + ' starts ' + SHOTS.map(S => { const x = a; a += S.real; return x.toFixed(1); }).join(','); console.log(msg); const pr = document.createElement('pre'); pr.id = 'timing'; pr.style.display = 'none'; pr.textContent = msg; document.body.appendChild(pr);
+  addEventListener('error', e => { document.title = 'ERR ' + e.message + ' @' + e.lineno; const p = document.createElement('pre'); p.style.cssText = 'position:fixed;top:0;left:0;color:#f55;font:20px monospace;z-index:9'; p.textContent = e.message + ' line ' + e.lineno; document.body.appendChild(p); });
+}
+let clock = 0, last = null, paused = false;
+let ended = false;
+function frame(now) {
+  if (last !== null && !paused && !ended) clock += Math.min(.1, (now - last) / 1000);
+  last = now;
+  if (clock >= TOTAL - .001) { clock = TOTAL - .001; ended = true; }
+  render(clock);
+  if (ended) endCard();
+  requestAnimationFrame(frame);
+}
+// The film plays once and stops on its last (faded) frame with an offer to watch again.
+function endCard() {
+  ctx.setTransform(VIEW.k, 0, 0, VIEW.k, VIEW.ox, VIEW.oy);
+  ctx.save(); ctx.font = 'italic 34px ' + SERIF; ctx.textAlign = 'center'; ctx.fillStyle = '#f5ecdb';
+  ctx.fillText('↻  Watch again', W / 2, H / 2 + 12); ctx.restore();
+}
+function toggle() { if (ended) { clock = 0; ended = false; paused = false; } else paused = !paused; }
+addEventListener('resize', () => { resize(); if (FIX !== null) render(parseFloat(FIX)); });
+addEventListener('click', toggle);
+addEventListener('keydown', e => { if (e.key === ' ') { toggle(); e.preventDefault(); } });
+resize();
+// A held frame is redrawn for its first second, in case the page is still being sized.
+let held = 0;
+function hold() { resize(); render(parseFloat(FIX)); if (++held < 60) requestAnimationFrame(hold); }
+if (FIX !== null) hold(); else requestAnimationFrame(frame);
+</script>
+</body>
+</html>

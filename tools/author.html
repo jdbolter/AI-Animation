@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Author · AI Animation</title>
+  <link rel="stylesheet" href="../style.css">
+  <style>
+    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 48px; box-shadow: var(--shadow); }
+    .maker { display: grid; gap: 18px; max-width: 760px; }
+    .field label { display: block; font-weight: 600; margin-bottom: 2px; }
+    .field .hint { color: var(--muted); font-size: 0.88rem; margin: 0 0 6px; }
+    .field input, .field textarea, .field select {
+      width: 100%; font: inherit; color: var(--text); background: var(--bg);
+      border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+    }
+    .field textarea { resize: vertical; line-height: 1.5; }
+    #direction { min-height: 200px; font-family: var(--serif); font-size: 1.05rem; }
+    .field input:focus, .field textarea:focus, .field select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    @media (max-width: 640px) { .row { grid-template-columns: 1fr; } }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    button, .btn {
+      font: inherit; font-size: 0.92rem; border-radius: 8px; padding: 8px 14px; cursor: pointer; text-decoration: none;
+      border: 1px solid var(--accent); background: transparent; color: var(--accent); display: inline-block;
+    }
+    button.primary { background: var(--accent); color: #fff; }
+    button.danger { border-color: var(--border); color: var(--muted); }
+    button.danger:hover { border-color: #b03a2e; color: #b03a2e; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .status { color: var(--muted); font-size: 0.9rem; }
+    .next { margin-top: 16px; padding: 14px 16px; border-left: 3px solid var(--accent); background: var(--bg); }
+    .next code { font-family: var(--mono); font-size: 0.9rem; }
+    .card { display: flex; flex-direction: column; }
+    .card:hover { transform: none; }
+    .card-body { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+    .card .actions { margin-top: auto; padding-top: 6px; }
+    .slug { font-family: var(--mono); font-size: 0.8rem; color: var(--muted); }
+    .badge { font-size: 0.75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); border: 1px solid var(--border); border-radius: 99px; padding: 1px 8px; }
+    .thumb .empty-thumb { position: absolute; inset: 0; display: grid; place-items: center; color: #a39a8f; font-style: italic; }
+    .revise { display: grid; gap: 8px; }
+    .revise textarea { width: 100%; font: inherit; font-size: 0.92rem; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; resize: vertical; }
+    .check { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 0.92rem; }
+    .offline { padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <p class="site-title">Author</p>
+      <nav class="site-nav"><a href="../" target="_blank">Public gallery ↗</a></nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div id="offline" class="offline" hidden>
+      This page needs the local author server. In the repo folder, run
+      <code>python3 tools/author_server.py</code> and open
+      <a href="http://localhost:8001/tools/author.html">http://localhost:8001/tools/author.html</a>.
+    </div>
+
+    <h2 class="section-title">New animation</h2>
+    <section class="panel">
+      <form class="maker" id="maker" autocomplete="off">
+        <div class="field">
+          <label for="name">Name</label>
+          <p class="hint">A short title. It becomes the folder name.</p>
+          <input id="name" type="text" placeholder="The Sheep and the Horses" required>
+        </div>
+        <div class="field">
+          <label for="direction">Text or direction</label>
+          <p class="hint">A story, a poem, a scene, or a sentence describing what should happen.</p>
+          <textarea id="direction" required placeholder="Paste the text here…"></textarea>
+        </div>
+        <div class="field">
+          <label for="references">References</label>
+          <p class="hint">Films, artists, images or sources to draw on. Empty means “infer”, as for the boxes below.</p>
+          <textarea id="references" rows="2" placeholder="infer"></textarea>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="duration">Duration</label>
+            <p class="hint">For example “about two minutes”.</p>
+            <input id="duration" type="text" placeholder="infer">
+          </div>
+          <div class="field">
+            <label for="aspect">Aspect ratio</label>
+            <p class="hint">The shape of the frame.</p>
+            <select id="aspect">
+              <option value="">infer</option>
+              <option value="16:9 (widescreen)">16:9 (widescreen)</option>
+              <option value="4:3">4:3</option>
+              <option value="1:1 (square)">1:1 (square)</option>
+              <option value="9:16 (vertical)">9:16 (vertical)</option>
+              <option value="2.39:1 (cinemascope)">2.39:1 (cinemascope)</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="visual">Visual qualities</label>
+          <p class="hint">Style, palette, mood, language of the captions, sound or silence.</p>
+          <textarea id="visual" rows="2" placeholder="infer"></textarea>
+        </div>
+        <div class="actions">
+          <button type="submit" class="primary" id="create">Create</button>
+          <label class="check"><input type="checkbox" id="start" checked> then open Claude Code to make it</label>
+          <button type="button" id="clear">Clear</button>
+          <span class="status" id="status" role="status"></span>
+        </div>
+      </form>
+      <div class="next" id="next" hidden></div>
+    </section>
+
+    <h2 class="section-title">All animations</h2>
+    <p class="status" id="count"></p>
+    <div class="gallery" id="list"></div>
+  </main>
+
+  <script>
+    var FIELDS = ['name', 'direction', 'references', 'duration', 'aspect', 'visual'];
+    var STORE = 'ai-animation-author-draft';
+    function el(id) { return document.getElementById(id); }
+    function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+    function api(path, body) {
+      var opts = body ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Author': '1' }, body: JSON.stringify(body) } : {};
+      return fetch('/api/' + path, opts).then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok) throw new Error(data.error || ('The server said ' + res.status + '.'));
+          return data;
+        });
+      });
+    }
+
+    function say(msg) { el('status').textContent = msg; }
+
+    // Open Claude Code in a Terminal window with the request already sent.
+    function claude(body) {
+      return api('claude', body).then(function (r) { return 'Opened Claude Code in Terminal: “' + r.request + '”'; });
+    }
+    // For a folder with a prompt but no film yet.
+    function makeBox(slug) {
+      var cmd = 'make the animation in ' + slug;
+      return 'Not made yet. <button type="button" class="primary" data-make="' + esc(slug) + '">Make</button> ' +
+        '<span class="status">or ask Claude Code yourself: <code>' + esc(cmd) + '</code> <button type="button" data-copy="' + esc(cmd) + '">Copy</button></span>';
+    }
+
+    // ---------- the new-animation form ----------
+    try {
+      var saved = JSON.parse(localStorage.getItem(STORE) || '{}');
+      FIELDS.forEach(function (f) { if (saved[f]) el(f).value = saved[f]; });
+    } catch (e) {}
+    FIELDS.forEach(function (f) {
+      el(f).addEventListener('input', function () {
+        var d = {}; FIELDS.forEach(function (k) { d[k] = el(k).value; });
+        try { localStorage.setItem(STORE, JSON.stringify(d)); } catch (e) {}
+      });
+    });
+    el('clear').addEventListener('click', function () {
+      FIELDS.forEach(function (f) { el(f).value = ''; });
+      try { localStorage.removeItem(STORE); } catch (e) {}
+      say(''); el('next').hidden = true;
+    });
+    el('maker').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var body = {}; FIELDS.forEach(function (f) { body[f] = el(f).value; });
+      el('create').disabled = true; say('Creating…');
+      api('create', body).then(function (data) {
+        FIELDS.forEach(function (f) { el(f).value = ''; });
+        try { localStorage.removeItem(STORE); } catch (e) {}
+        load();
+        if (!el('start').checked) { say('Created animations/' + data.slug + '.'); return; }
+        say('Created animations/' + data.slug + '.');
+        return claude({ slug: data.slug }).then(say);
+      }).catch(function (err) { say(err.message); })
+        .then(function () { el('create').disabled = false; });
+    });
+
+    document.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-copy]');
+      if (!b) return;
+      navigator.clipboard.writeText(b.getAttribute('data-copy')).then(function () {
+        b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1500);
+      });
+    });
+
+    // ---------- the list of animations ----------
+    function card(a) {
+      var base = '../animations/' + encodeURIComponent(a.dir) + '/';
+      var thumb;
+      if (a.poster) thumb = '<img src="' + base + esc(a.poster) + '" alt="" loading="lazy">';
+      else if (a.hasIndex) thumb = '<iframe src="' + base + 'index.html?t=' + (a.previewTime || 2) + '" loading="lazy" tabindex="-1" title=""></iframe>';
+      else thumb = '<div class="empty-thumb">not made yet</div>';
+      var watch = '';
+      if (a.entries.length) {
+        watch = a.entries.map(function (e) {
+          var label = a.entries.length > 1 ? 'Watch: ' + e.title : 'Watch';
+          return '<a class="btn" target="_blank" href="../watch.html?a=' + encodeURIComponent(e.slug) + '">' + esc(label) + '</a>';
+        }).join(' ');
+      } else if (a.hasIndex) {
+        watch = '<a class="btn" target="_blank" href="' + base + 'index.html">Watch</a>';
+      }
+      var info = a.entries.length ? '<span class="badge">' + esc(a.entries[0].section === 'essay' ? 'essay' : 'fiction') + '</span>'
+        : '<span class="badge">not in gallery</span>';
+      var meta = a.entries.length && a.entries[0].model ? '<span class="meta">' + esc(a.entries[0].model) + (a.entries[0].date ? ' · ' + esc(a.entries[0].date) : '') + '</span>' : '';
+      var make = a.hasIndex ? '' : '<div class="next">' + makeBox(a.dir) + '</div>';
+      var revise = a.hasIndex ? '<div class="revise" hidden data-for="' + esc(a.dir) + '"><textarea rows="3" placeholder="What should change? For example: more weight in the jump, slower ending."></textarea>' +
+        '<div class="actions"><button type="button" class="primary" data-send="' + esc(a.dir) + '">Open Claude Code</button></div></div>' : '';
+      return '<div class="card"><div class="thumb">' + thumb + '</div><div class="card-body">' +
+        '<h3 class="card-title">' + esc(a.title) + '</h3>' +
+        '<div><span class="slug">' + esc(a.dir) + '</span> ' + info + '</div>' + meta + make +
+        revise + '<div class="actions">' + watch +
+        (a.hasIndex ? ' <button type="button" data-revise="' + esc(a.dir) + '">Revise</button>' : '') +
+        (a.hasPrompt ? ' <a class="btn" target="_blank" href="' + base + 'prompt.txt">Prompt</a>' : '') +
+        ' <button type="button" class="danger" data-delete="' + esc(a.dir) + '" data-title="' + esc(a.title) + '">Delete</button>' +
+        '</div></div></div>';
+    }
+
+    function load() {
+      return api('animations').then(function (data) {
+        el('offline').hidden = true;
+        el('list').innerHTML = data.animations.map(card).join('');
+        el('count').textContent = data.animations.length + ' folders in animations/.';
+      }).catch(function () { el('offline').hidden = false; el('create').disabled = true; });
+    }
+
+    el('list').addEventListener('click', function (e) {
+      var r = e.target.closest('[data-revise]');
+      if (r) {
+        var box = el('list').querySelector('.revise[data-for="' + r.getAttribute('data-revise') + '"]');
+        box.hidden = !box.hidden; if (!box.hidden) box.querySelector('textarea').focus();
+        return;
+      }
+      var m = e.target.closest('[data-make]'), sd = e.target.closest('[data-send]');
+      if (m || sd) {
+        var body = m ? { slug: m.getAttribute('data-make') }
+          : { slug: sd.getAttribute('data-send'), revise: true, notes: sd.closest('.revise').querySelector('textarea').value };
+        (m || sd).disabled = true;
+        claude(body).then(function (msg) { if (sd) sd.closest('.revise').hidden = true; alert(msg); })
+          .catch(function (err) { alert(err.message); })
+          .then(function () { (m || sd).disabled = false; });
+        return;
+      }
+      var b = e.target.closest('[data-delete]');
+      if (!b) return;
+      var slug = b.getAttribute('data-delete'), title = b.getAttribute('data-title');
+      if (!confirm('Delete “' + title + '”?\n\nThe folder animations/' + slug + ' goes to the Trash, and its entries are removed from animations.json.')) return;
+      b.disabled = true;
+      api('delete', { slug: slug }).then(function (r) {
+        load();
+        alert('Moved to the Trash: ' + r.trashed + (r.entriesRemoved ? '\nGallery entries removed: ' + r.entriesRemoved : ''));
+      }).catch(function (err) { b.disabled = false; alert(err.message); });
+    });
+
+    load();
+  </script>
+</body>
+</html>

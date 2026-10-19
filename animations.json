@@ -121,6 +121,19 @@
     "notes": "About two minutes, in nine shots, drawn in code on a canvas with the same approach as the other films. August Schleicher's 1868 fable, written in his reconstruction of Proto-Indo-European, is told in English captions (a close translation of his own German gloss) and set on the steppe of the Indo-Europeans: feather grass, burial mounds on the horizon, a wagon with solid wheels, and stocky dun horses with upright manes. The horses' explanation is shown as a painted band turning round a pot: wool plucked, spun on a drop spindle, woven on a warp-weighted loom, and worn as a cloak. It ends with Schleicher's reconstructed text. Click the animation to pause it."
   },
   {
+    "slug": "tv-education",
+    "title": "Room 4",
+    "direction": "This animation is an alternate history of education in the United States at the grade school level from the 1960s to the present. In this version, television is used to replace printed texts and textbooks as far as possible. So, we want a series of 5 vignettes from 1960s to 2026 showing how this affects student work and progress. We see students in classrooms watching videos. Teachers in the classroom are now like tutors helping students individually. We see students working in their home watching videos. After the 1980s and 1990s especially, these videos are on computer screens and not on just television monitors.",
+    "type": "html",
+    "aspect": "16 / 9",
+    "previewTime": 138.5,
+    "poster": "poster.png",
+    "model": "Claude Opus 5.5",
+    "date": "2026-10-18",
+    "prompt": "prompt.txt",
+    "notes": "About four and three-quarter minutes, in seventeen shots and five vignettes (1962, 1975, 1988, 2004, 2026), drawn in code on a canvas with the same approach as the other films. It starts from a real experiment: from 1961 an airplane circled over Indiana broadcasting lessons to schools (the Midwest Program on Airborne Television Instruction). In this history the experiment never ended. One classroom, Room 4, is the recurring set: the same clock, closet and window, with a tree outside, planted in 1962, that grows through the decades. The lesson changes from a broadcast that cannot see the class, to a tape you can rewind, to a video that pauses for you, while the teacher moves from the front of the room to kneeling beside one child at a time. The two home scenes rhyme: in 1975 Linda misses the answer while her mother brings a snack (and turns the channel back with her toe), and in 2004 she brings her own son a snack and he presses pause. The costs are shown too: children who can explain photosynthesis but not spell it. It ends with the textbooks boxed up in 1962 being found again. The school, the teachers and the children are invented. Click the animation to pause it."
+  },
+  {
     "slug": "das-grimmsche-gesetz",
     "title": "Das Grimmsche Gesetz",
     "direction": "Das Grimmsche Gesetz – im Deutschen fachsprachlich als Erste Lautverschiebung bekannt – markiert den Moment, in dem sich das Urgermanische im 1. Jahrtausend v. Chr. als eigenständige Sprachfamilie aus dem Indoeuropäischen herausbildete.",

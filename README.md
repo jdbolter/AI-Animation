@@ -55,6 +55,16 @@ python3 -m http.server
 
 Then open http://localhost:8000.
 
+## Author page
+
+For the owner, on this computer only: a page for starting new animations and for viewing and deleting all of them. Start it from this folder with
+
+```
+python3 tools/author_server.py
+```
+
+and open http://localhost:8001/tools/author.html. It serves the whole site too, so it can be used instead of `python3 -m http.server`. The Make and Revise buttons open Claude Code in a Terminal window with the request already sent; it asks for permission there as usual. Deleted animations go to the Trash, and their entries are removed from `animations.json`. On GitHub Pages the page does nothing, because there is no server there.
+
 ## Publishing
 
 Push to `main`. GitHub Pages is set to deploy from the `main` branch, root folder (Settings → Pages → Build and deployment → Deploy from a branch). The `.nojekyll` file stops GitHub's Jekyll step from touching the files, since Jekyll's template language uses the same `{{ }}` markers as the prompt's blanks.
