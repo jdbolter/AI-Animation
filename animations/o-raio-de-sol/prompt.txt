@@ -1173,25 +1173,23 @@ CURRENT ASSIGNMENT
 
 Create a hand-drawn animated cartoon from the following direction:
 
-"This animation is an alternate history of education in the United States at the grade school level from the 1960s to the present. In this version, television is used to replace printed texts and textbooks as far as possible. 
-
-So, we want a series of 5 vignettes from 1960s to 2026 showing how this affects student work and progress. We see students in classrooms watching videos. Teachers in the classroom are now like tutors helping students individually. We see students working in their home watching videos. After the 1980s and 1990s especially, these videos are on computer screens and not on just television monitors."
+"Um habitante do litoral português sentado na esplanada sob céu nublado avista um único raio de sol minúsculo que rompe as nuvens; corre desenfreado, arrasta a cadeira de praia em frações de segundo e estende-se exatamente naquele círculo de calor antes que ele desapareça."
 
 Optional references:
 
-"infer"
+"{{REFERENCES}}"
 
 Desired duration:
 
-"about 5 minutes"
+"{{DURATION_OR_INFER}}"
 
 Desired aspect ratio:
 
-"infer"
+"{{ASPECT_RATIO_OR_INFER}}"
 
 Desired visual qualities:
 
-"infer"
+"{{VISUAL_DIRECTION_OR_INFER}}"
 
 Begin with the dramatic action and thumbnail staging.
 

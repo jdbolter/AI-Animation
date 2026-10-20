@@ -1,0 +1,1109 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>O Raio de Sol</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    canvas { display: block; cursor: pointer; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// O Raio de Sol: a man on a grey Portuguese seafront, one tiny sunbeam, and a deck chair.
+// Drawn in canvas as a multiplane cartoon: characters and effects "on twos" with boiling ink
+// lines; backgrounds painted on separate planes that the camera moves through.
+// Add ?t=SECONDS to the URL to hold a single frame. Click to pause; it plays once, then click to watch again.
+
+const W = 1280, H = 720;
+const cvs = document.getElementById('c');
+let ctx = cvs.getContext('2d');
+let VIEW = { k: 1, ox: 0, oy: 0 };
+let NOW = 0;
+
+const INK = '#2a2622';
+const SERIF = '"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif';
+
+// ---------- math ----------
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, f) => a + (b - a) * f;
+const ease = f => { f = clamp(f); return f * f * (3 - 2 * f); };
+const easeOut = f => { f = clamp(f); return 1 - (1 - f) ** 3; };
+const easeIn = f => { f = clamp(f); return f * f * f; };
+const seg = (u, a, b) => clamp((u - a) / (b - a));
+const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+const twos = u => Math.floor(u * 12) / 12;
+const frac = x => x - Math.floor(x);
+function mix(a, b, f) { return Array.isArray(a) ? a.map((x, i) => x + (b[i] - x) * f) : a + (b - a) * f; }
+// Exposure-sheet keys: [[time, value], ...], eased between neighbours.
+function K(u, keys, e = ease) {
+  if (u <= keys[0][0]) return keys[0][1];
+  for (let i = 1; i < keys.length; i++) {
+    if (u < keys[i][0]) {
+      const [a, va] = keys[i - 1], [b, vb] = keys[i];
+      return mix(va, vb, e((u - a) / (b - a)));
+    }
+  }
+  return keys[keys.length - 1][1];
+}
+// Keys that snap: each value holds until the next key (for drawings exposed as holds).
+function snap(u, keys) { let v = keys[0][1]; for (const [a, x] of keys) if (u >= a) v = x; return v; }
+function R(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function rgb(h) { const n = parseInt(h.slice(1), 16); return [n >> 16, n >> 8 & 255, n & 255]; }
+function shade(h, a) {
+  let [r, g, b] = rgb(h);
+  const t = a < 0 ? 0 : 255, p = Math.abs(a);
+  r = Math.round(r + (t - r) * p); g = Math.round(g + (t - g) * p); b = Math.round(b + (t - b) * p);
+  return `rgb(${r},${g},${b})`;
+}
+function mixC(a, b, f) { const x = rgb(a), y = rgb(b); return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * clamp(f)).toString(16).padStart(2, '0')).join(''); }
+
+// ---------- ink ----------
+let BOIL = 0;
+function jitterPts(pts, amt, r) { return pts.map(p => [p[0] + (r() - .5) * 2 * amt, p[1] + (r() - .5) * 2 * amt]); }
+function tracePath(p, close, sharp) {
+  ctx.beginPath();
+  if (sharp || p.length < 3) {
+    ctx.moveTo(p[0][0], p[0][1]);
+    for (let i = 1; i < p.length; i++) ctx.lineTo(p[i][0], p[i][1]);
+    if (close) ctx.closePath();
+    return;
+  }
+  if (close) {
+    const n = p.length; const m = mid(p[n - 1], p[0]);
+    ctx.moveTo(m[0], m[1]);
+    for (let i = 0; i < n; i++) { const q = p[i], m2 = mid(q, p[(i + 1) % n]); ctx.quadraticCurveTo(q[0], q[1], m2[0], m2[1]); }
+    ctx.closePath();
+  } else {
+    ctx.moveTo(p[0][0], p[0][1]);
+    for (let i = 1; i < p.length - 1; i++) { const m = mid(p[i], p[i + 1]); ctx.quadraticCurveTo(p[i][0], p[i][1], m[0], m[1]); }
+    const l = p[p.length - 1]; ctx.lineTo(l[0], l[1]);
+  }
+}
+// A hand-inked shape. Fill and line get separate jitter, like paint laid under a drawn line.
+// Lines "boil" (redraw slightly differently) unless o.still is set.
+function ink(pts, o = {}) {
+  const id = o.id || 1, j = o.j ?? 1.1, seed = o.still ? id * 7919 : id * 7919 + BOIL * 104729;
+  const close = o.close ?? !!o.fill;
+  if (o.fill) { tracePath(jitterPts(pts, j * .8, R(seed + 17)), true, o.sharp); ctx.fillStyle = o.fill; ctx.fill(); }
+  if (o.stroke !== false) {
+    tracePath(jitterPts(pts, j, R(seed)), close, o.sharp);
+    ctx.strokeStyle = o.stroke || INK; ctx.lineWidth = o.w || 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.stroke();
+  }
+}
+function ellPts(c, rx, ry, n = 12) { const p = []; for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; p.push([c[0] + Math.cos(a) * rx, c[1] + Math.sin(a) * ry]); } return p; }
+function limb(pts, w, col, id) { ink(pts, { w: w + 3.2, stroke: INK, id }); ink(pts, { w, stroke: col, id }); }
+function blob(x, y, rx, ry, col, rot = 0) { ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, rot, 0, 7); ctx.fill(); }
+function ik(S, T, a, b, pick) {
+  const dx = T[0] - S[0], dy = T[1] - S[1];
+  const dd = clamp(Math.hypot(dx, dy), Math.abs(a - b) + 1, a + b - .5);
+  const ang = Math.atan2(dy, dx);
+  const A = Math.acos(clamp((a * a + dd * dd - b * b) / (2 * a * dd), -1, 1));
+  const e1 = [S[0] + Math.cos(ang + A) * a, S[1] + Math.sin(ang + A) * a];
+  const e2 = [S[0] + Math.cos(ang - A) * a, S[1] + Math.sin(ang - A) * a];
+  const E = pick(e1) >= pick(e2) ? e1 : e2;
+  const ha = Math.atan2(T[1] - E[1], T[0] - E[0]);
+  return [E, [E[0] + Math.cos(ha) * b, E[1] + Math.sin(ha) * b]];
+}
+function strand(c, w0, w1) {
+  const L = [], Rr = [];
+  for (let i = 0; i < c.length; i++) {
+    const a = c[Math.max(0, i - 1)], b = c[Math.min(c.length - 1, i + 1)];
+    let nx = -(b[1] - a[1]), ny = b[0] - a[0]; const l = Math.hypot(nx, ny) || 1; nx /= l; ny /= l;
+    const w = lerp(w0, w1, i / (c.length - 1)) / 2;
+    L.push([c[i][0] + nx * w, c[i][1] + ny * w]); Rr.push([c[i][0] - nx * w, c[i][1] - ny * w]);
+  }
+  return L.concat(Rr.reverse());
+}
+
+// ---------- multiplane camera ----------
+// p is the plane's depth factor: 1 = character plane, <1 = farther, >1 = nearer the lens.
+let CAM = { x: W / 2, y: H / 2, z: 1 };
+function layer(p, fn) {
+  ctx.save();
+  const z = 1 + (CAM.z - 1) * p;
+  ctx.translate(W / 2, H / 2); ctx.scale(z, z);
+  ctx.translate(-(W / 2 + (CAM.x - W / 2) * p), -(H / 2 + (CAM.y - H / 2) * p));
+  fn();
+  ctx.restore();
+}
+// Where a point on plane p lands on the screen.
+function scr(p, x, y) {
+  const z = 1 + (CAM.z - 1) * p;
+  return [W / 2 + z * (x - (W / 2 + (CAM.x - W / 2) * p)), H / 2 + z * (y - (H / 2 + (CAM.y - H / 2) * p))];
+}
+
+// ---------- the place ----------
+// The café terrace is on the left, raised above the beach; the beach runs off to the right.
+const GT = 600, GS = 648, EDGE = 1150, TX = 630, CX = 2450, HZ = 330;
+const RX = 1440, RY = -120;          // the hole in the clouds, on the low-cloud plane (p .45)
+const LX = CX + 12;                  // where the sunbeam lands
+
+function skyLayer() {
+  const g = ctx.createLinearGradient(0, -900, 0, HZ + 10);
+  g.addColorStop(0, '#8d959a'); g.addColorStop(.75, '#b2b7b8'); g.addColorStop(1, '#ccd0cd');
+  ctx.fillStyle = g; ctx.fillRect(-4000, -2500, 11000, 3200);
+}
+function farClouds() {
+  const r = R(31), dx = NOW * 2;
+  for (let i = 0; i < 34; i++) {
+    const x = -2400 + i * 240 + r() * 90 + dx, y = 238 + r() * 80, w = 240 + r() * 260, h = 14 + r() * 14;
+    blob(x, y, w / 2, h / 2, r() < .5 ? 'rgba(150,157,162,.5)' : 'rgba(200,203,202,.55)');
+  }
+}
+const PUFFS = (() => { const r = R(77), a = []; for (let x = -3000; x < 5600; x += 60 + r() * 60) a.push([x, 150 + r() * 80, 70 + r() * 90, 38 + r() * 34, r()]); return a; })();
+// The low ceiling of cloud. open (0..1) is the hole the sun comes through.
+function lowClouds(open) {
+  const dx = NOW * 5;
+  ctx.fillStyle = '#979ea2'; ctx.fillRect(-4000, -2600, 11000, 2600 + 170);
+  const r = R(78);
+  for (let i = 0; i < 60; i++) blob(-2500 + r() * 7600 + dx * .6, -500 + r() * 640, 150 + r() * 200, 30 + r() * 40, r() < .5 ? 'rgba(128,136,142,.45)' : 'rgba(170,176,178,.4)');
+  for (const [x, y, rx, ry, k] of PUFFS) {
+    const X = x + dx;
+    blob(X, y + ry * .3, rx, ry * .9, '#7f878c');
+    blob(X - rx * .1, y - ry * .1, rx * .9, ry * .8, mixC('#959ca1', '#aeb3b5', k));
+  }
+  if (open > 0) {
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    const g = ctx.createRadialGradient(RX, RY, 0, RX, RY, 170 * open);
+    g.addColorStop(0, 'rgba(255,236,190,.8)'); g.addColorStop(.25, 'rgba(255,220,160,.28)'); g.addColorStop(1, 'rgba(255,210,150,0)');
+    ctx.fillStyle = g; ctx.fillRect(RX - 200, RY - 200, 400, 400);
+    ctx.restore();
+    // a torn hole, its ragged edges lit from above
+    const rr = R(63), rim = [], hole = [];
+    for (let i = 0; i < 14; i++) {
+      const a = i / 14 * Math.PI * 2, k1 = .75 + rr() * .5, k2 = .7 + rr() * .6;
+      rim.push([RX + Math.cos(a) * 34 * open * k1, RY + Math.sin(a) * 15 * open * k1]);
+      hole.push([RX + Math.cos(a) * 16 * open * k2, RY + Math.sin(a) * 7 * open * k2]);
+    }
+    ink(rim, { fill: 'rgba(222,212,190,.85)', stroke: false, id: 61, sharp: true });
+    ink(hole, { fill: '#fff7de', stroke: false, id: 62 });
+  }
+}
+function sea() {
+  ctx.fillStyle = '#788885'; ctx.fillRect(-4000, HZ, 11000, 260);
+  const g = ctx.createLinearGradient(0, HZ, 0, HZ + 120);
+  g.addColorStop(0, 'rgba(90,104,106,.9)'); g.addColorStop(1, 'rgba(90,104,106,0)');
+  ctx.fillStyle = g; ctx.fillRect(-4000, HZ, 11000, 120);
+  ctx.fillStyle = '#5c6b6c'; ctx.fillRect(-4000, HZ - 1, 11000, 4);
+  const r = R(91); ctx.strokeStyle = '#e1e5e0'; ctx.lineCap = 'round';
+  for (let i = 0; i < 260; i++) {
+    const y = HZ + 6 + r() ** 1.6 * 110, x = -3000 + r() * 9000, w = 6 + 30 * (y - HZ) / 110, ph = r() * 7;
+    ctx.globalAlpha = clamp(.15 + .55 * Math.sin(NOW * 1.1 + ph)); ctx.lineWidth = 1 + (y - HZ) / 60;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + w, y); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  // a far breakwater with its little lighthouse
+  ctx.fillStyle = '#5a6363'; ctx.fillRect(1820, HZ - 3, 220, 7);
+  ink([[2010, HZ], [2012, HZ - 34], [2022, HZ - 34], [2024, HZ]], { fill: '#e8e4dc', w: 1.2, id: 70, still: true });
+  ctx.fillStyle = '#b5473c'; ctx.fillRect(2011, HZ - 22, 12, 7);
+  ink([[2009, HZ - 34], [2017, HZ - 42], [2025, HZ - 34]], { fill: '#b5473c', w: 1.2, id: 71, still: true });
+}
+// Waves breaking on the far shore.
+function surf() {
+  const r = R(95);
+  for (let k = 0; k < 3; k++) {
+    const ph = frac(NOW / 6 + k / 3), y = 424 + ph * 16, a = Math.sin(ph * Math.PI);
+    ctx.strokeStyle = `rgba(236,238,233,${.75 * a})`; ctx.lineWidth = 3 + ph * 3;
+    ctx.beginPath();
+    for (let x = -3000; x < 6000; x += 40) ctx.lineTo(x, y + Math.sin(x * .013 + k * 2) * 3 + (r() - .5) * 2);
+    ctx.stroke();
+  }
+}
+const TENT = [['#3e6aa0', '#f1ede2'], ['#c4473b', '#f1ede2'], ['#3c8a6a', '#f1ede2'], ['#e0a83a', '#f1ede2']];
+function farBeach() {
+  const g = ctx.createLinearGradient(0, 428, 0, 700);
+  g.addColorStop(0, '#a9a395'); g.addColorStop(1, '#bfb5a2');
+  ctx.fillStyle = g; ctx.fillRect(-4000, 428, 11000, 600);
+  ctx.fillStyle = 'rgba(120,128,126,.35)'; ctx.fillRect(-4000, 428, 11000, 14);   // wet sand
+  // the rows of striped canvas tents, all empty
+  for (let i = 0; i < 26; i++) {
+    const x = 1240 + i * 118, y = 488, c = TENT[i % 4], fl = Math.sin(NOW * 2.4 + i) * 2;
+    ctx.save(); ctx.beginPath(); ctx.rect(x - 34, y - 70, 68, 70); ctx.clip();
+    for (let s = 0; s < 8; s++) { ctx.fillStyle = c[s % 2]; ctx.fillRect(x - 34 + s * 8.5, y - 70, 8.5, 70); }
+    ctx.restore();
+    ink([[x - 34, y], [x - 34, y - 54], [x - 26, y - 66], [x + 26, y - 66], [x + 34, y - 54], [x + 34 + fl, y]], { w: 1.5, id: 80 + i, still: true, sharp: true });
+    blob(x, y + 2, 38, 4, 'rgba(90,85,75,.22)');
+    ctx.fillStyle = 'rgba(40,40,40,.12)'; ctx.fillRect(x - 34, y - 66, 68, 14);
+  }
+}
+// Azulejo tiles: a small canvas used as a pattern.
+const TILE = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d');
+  g.fillStyle = '#eef0ec'; g.fillRect(0, 0, 64, 64);
+  g.fillStyle = '#3a65a0';
+  g.beginPath(); g.moveTo(32, 8); g.lineTo(56, 32); g.lineTo(32, 56); g.lineTo(8, 32); g.closePath(); g.fill();
+  g.fillStyle = '#eef0ec'; g.beginPath(); g.arc(32, 32, 11, 0, 7); g.fill();
+  g.fillStyle = '#3a65a0'; g.beginPath(); g.arc(32, 32, 5, 0, 7); g.fill();
+  for (const [x, y] of [[0, 0], [64, 0], [0, 64], [64, 64]]) { g.beginPath(); g.arc(x, y, 9, 0, 7); g.fill(); }
+  g.strokeStyle = 'rgba(80,90,100,.35)'; g.lineWidth = 2; g.strokeRect(0, 0, 64, 64);
+  return c;
+})();
+let TILEPAT = null;
+function building() {
+  const x0 = -1400, x1 = 1000;
+  ctx.fillStyle = '#e4d6ae'; ctx.fillRect(x0, -900, x1 - x0, 1450);
+  // tiled ground floor
+  if (!TILEPAT) TILEPAT = ctx.createPattern(TILE, 'repeat');
+  ctx.save(); ctx.translate(0, 318); ctx.scale(.42, .42); ctx.fillStyle = TILEPAT; ctx.fillRect(x0 / .42, 0, (x1 - x0) / .42, 232 / .42); ctx.restore();
+  ctx.fillStyle = 'rgba(40,50,70,.08)'; ctx.fillRect(x0, 318, x1 - x0, 232);
+  ink([[x0, 318], [x1, 318]], { w: 3, id: 90, still: true });
+  // upper windows with green shutters and iron balconies
+  for (let i = 0; i < 8; i++) {
+    const wx = -1260 + i * 290;
+    for (const wy of [-260, 20]) {
+      ctx.fillStyle = '#4b5a63'; ctx.fillRect(wx, wy, 70, 120);
+      ctx.fillStyle = 'rgba(200,210,215,.25)'; ctx.fillRect(wx + 6, wy + 6, 26, 108);
+      for (const sx of [-1, 1]) { ctx.fillStyle = '#3f7259'; ctx.fillRect(sx < 0 ? wx - 30 : wx + 70, wy, 30, 120); ctx.fillStyle = 'rgba(0,0,0,.18)'; for (let k = 0; k < 10; k++) ctx.fillRect(sx < 0 ? wx - 30 : wx + 70, wy + 6 + k * 11.5, 30, 2); }
+      ink([[wx, wy], [wx + 70, wy], [wx + 70, wy + 120], [wx, wy + 120]], { w: 1.6, id: 91 + i, still: true, close: true, sharp: true });
+      ctx.fillStyle = '#ede7d6'; ctx.fillRect(wx - 10, wy + 120, 90, 8);
+      if (wy > 0) { ctx.strokeStyle = '#2c2a28'; ctx.lineWidth = 2; ctx.strokeRect(wx - 12, wy + 78, 94, 42); for (let k = 0; k < 9; k++) { ctx.beginPath(); ctx.moveTo(wx - 12 + k * 11.7, wy + 78); ctx.lineTo(wx - 12 + k * 11.7, wy + 120); ctx.stroke(); } }
+    }
+  }
+  // the café's window and door
+  ctx.fillStyle = '#39434a'; ctx.fillRect(250, 352, 520, 198);
+  ctx.fillStyle = 'rgba(190,200,205,.18)'; ctx.beginPath(); ctx.moveTo(270, 352); ctx.lineTo(360, 352); ctx.lineTo(300, 550); ctx.lineTo(250, 550); ctx.fill();
+  ctx.fillStyle = 'rgba(190,200,205,.12)'; ctx.beginPath(); ctx.moveTo(520, 352); ctx.lineTo(560, 352); ctx.lineTo(500, 550); ctx.lineTo(460, 550); ctx.fill();
+  for (const x of [250, 420, 590, 770]) ink([[x, 352], [x, 550]], { w: 3, stroke: '#d8d2c2', id: 100 + x, still: true });
+  ink([[250, 352], [770, 352], [770, 550], [250, 550]], { w: 2, id: 99, still: true, close: true, sharp: true });
+  // the pharmacy's green cross, which shows the temperature
+  ctx.fillStyle = '#d6cba6'; ctx.fillRect(x1 - 6, -900, 6, 1450);
+  const cx = 905, cy = 190;
+  ctx.fillStyle = '#1e2a22';
+  for (const [w, h] of [[34, 96], [96, 34]]) ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
+  ctx.fillStyle = '#3fbf62';
+  for (const [w, h] of [[26, 88], [88, 26]]) ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
+  ctx.fillStyle = '#16301c'; ctx.fillRect(cx - 30, cy - 13, 60, 26);
+  ctx.save(); ctx.font = 'bold 22px "Courier New",monospace'; ctx.textAlign = 'center'; ctx.fillStyle = '#6dff8e'; ctx.fillText('16°', cx, cy + 8); ctx.restore();
+  ink([[cx, cy - 48], [cx, cy - 92]], { w: 2, id: 98, still: true });
+  ctx.fillStyle = '#3c3a36'; ctx.fillRect(x0, 540, x1 - x0, 14);
+}
+// The terrace's black-and-white wave pavement.
+function calcada(x0, x1, y0, y1) {
+  ctx.fillStyle = '#e2ded3'; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, x1 - x0, y1 - y0); ctx.clip();
+  ctx.fillStyle = '#5b5852';
+  let yb = y0 + 10;
+  for (let k = 0; k < 10; k++) {
+    const amp = 5 + k * 2.2, th = 5 + k * 1.8;
+    ctx.beginPath();
+    for (let x = x0; x <= x1 + 20; x += 20) ctx.lineTo(x, yb + Math.sin(x * .011) * amp);
+    for (let x = x1 + 20; x >= x0; x -= 20) ctx.lineTo(x, yb + th + Math.sin(x * .011) * amp);
+    ctx.fill();
+    yb += 22 + k * 7;
+  }
+  const r = R(5); ctx.fillStyle = 'rgba(0,0,0,.07)';
+  for (let i = 0; i < 700; i++) ctx.fillRect(x0 + r() * (x1 - x0), y0 + r() * (y1 - y0), 3, 2);
+  ctx.restore();
+}
+function terrace() {
+  // the near sand, lower than the terrace
+  const g = ctx.createLinearGradient(0, 560, 0, 900);
+  g.addColorStop(0, 'rgba(191,181,162,0)'); g.addColorStop(.15, '#c2b8a4'); g.addColorStop(1, '#cfc4ae');
+  ctx.fillStyle = g; ctx.fillRect(EDGE - 40, 560, 6000, 800);
+  const r = R(7); ctx.fillStyle = 'rgba(120,110,90,.18)';
+  for (let i = 0; i < 500; i++) { const x = EDGE + r() * 5000, y = 610 + r() * 400; ctx.fillRect(x, y, 2 + r() * 5, 1.5); }
+  for (let i = 0; i < 26; i++) { const x = EDGE + 80 + r() * 4600, y = 630 + r() * 250; ink([[x, y], [x + 8 + r() * 12, y - 3], [x + 18 + r() * 14, y + 1]], { w: 1.4, stroke: 'rgba(80,70,55,.45)', id: 300 + i, still: true }); }
+  // the terrace slab and its pavement
+  calcada(-1600, EDGE, 548, 1300);
+  ctx.fillStyle = '#9a958a'; ctx.beginPath(); ctx.moveTo(EDGE, 548); ctx.lineTo(EDGE + 16, 566); ctx.lineTo(EDGE + 16, 1300); ctx.lineTo(EDGE, 1300); ctx.fill();
+  ink([[EDGE, 548], [EDGE, 1300]], { w: 2, id: 120, still: true });
+  ink([[-1600, 548], [EDGE, 548]], { w: 2, id: 121, still: true });
+  // steps down to the sand
+  for (let k = 0; k < 3; k++) {
+    const x = EDGE + 16 + k * 34, y = GT + 2 + k * 17;
+    ink([[x, y], [x + 34, y], [x + 34, y + 17], [x + 40, y + 17]], { w: 1.8, id: 125 + k, still: true });
+    ctx.fillStyle = '#b8b2a5'; ctx.fillRect(x, y, 34, 17 + (2 - k) * 0);
+  }
+  // a bollard at the edge
+  ink([[EDGE - 46, GT], [EDGE - 46, GT - 36], [EDGE - 40, GT - 42], [EDGE - 22, GT - 42], [EDGE - 16, GT - 36], [EDGE - 16, GT]], { fill: '#4a4f4e', w: 1.8, id: 130, still: true });
+}
+function awning() {
+  const x0 = 200, x1 = 812, y0 = 232, y1 = 290;
+  for (let i = 0; i < 18; i++) {
+    const a = x0 + i * (x1 - x0) / 18, b = a + (x1 - x0) / 18;
+    ctx.fillStyle = i % 2 ? '#f0ece0' : '#2f7a5c';
+    ctx.beginPath(); ctx.moveTo(a + 6, y0); ctx.lineTo(b + 6, y0); ctx.lineTo(b, y1); ctx.lineTo(a, y1); ctx.fill();
+  }
+  ink([[x0 + 6, y0], [x1 + 6, y0], [x1, y1], [x0, y1]], { w: 2, id: 140, still: true, close: true, sharp: true });
+  // the valance flaps in the wind
+  const pts = [[x0, y1]];
+  for (let i = 0; i < 17; i++) {
+    const a = x0 + i * (x1 - x0) / 17, fl = Math.sin(NOW * 5 + i * .8) * 3 + Math.sin(NOW * 2.1) * 2;
+    pts.push([a + 6, y1 + 18 + fl], [a + (x1 - x0) / 34, y1 + 24 + fl], [a + (x1 - x0) / 17 - 6, y1 + 18 + fl]);
+  }
+  pts.push([x1, y1]);
+  ink(pts, { fill: '#2f7a5c', w: 1.8, id: 141 });
+  ctx.save(); ctx.font = 'bold 15px ' + SERIF; ctx.textAlign = 'center'; ctx.fillStyle = '#f4efe2';
+  ctx.fillText('C A F É   O N D A', (x0 + x1) / 2, y1 + 15 + Math.sin(NOW * 2.1) * 2); ctx.restore();
+  ctx.fillStyle = 'rgba(30,40,40,.25)'; ctx.fillRect(x0, y1 + 24, x1 - x0, 6);
+}
+
+// ---------- furniture and props ----------
+const WHITE = '#f1f0ea', WOOD = '#b5895a';
+function cafeChair(x, y, d, id) {
+  const p = (a, b) => [x + d * a, y + b];
+  limb([p(-20, 0), p(-16, -44)], 4, WHITE, id);
+  limb([p(22, 0), p(18, -44)], 4, WHITE, id + 1);
+  ink([p(-26, -42), p(26, -42), p(26, -50), p(-26, -50)], { fill: WHITE, w: 1.8, id: id + 2 });
+  ink([p(-24, -48), p(-30, -86), p(-36, -112), p(-28, -116), p(-20, -88), p(-14, -50)], { fill: WHITE, w: 1.8, id: id + 3 });
+}
+function cafeTable(x, id) {
+  ink([[x - 22, GT], [x + 22, GT], [x + 18, GT - 5], [x - 18, GT - 5]], { fill: '#545a58', w: 1.6, id });
+  limb([[x, GT - 4], [x, GT - 74]], 4, '#6a706e', id + 1);
+  ink([[x - 48, GT - 74], [x + 48, GT - 74], [x + 46, GT - 80], [x - 46, GT - 80]], { fill: '#e9e6dd', w: 1.8, id: id + 2 });
+}
+// An espresso cup on its saucer (or, with o.held, just the cup).
+function cup(x, y, o = {}) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(o.rot || 0);
+  if (!o.noSaucer) ink([[-13, 0], [13, 0], [10, 3], [-10, 3]], { fill: WHITE, w: 1.4, id: 150 });
+  ink([[-7, -12], [7, -12], [5, 0], [-5, 0]], { fill: WHITE, w: 1.5, id: 151 });
+  ink([[7, -10], [11, -9], [11, -5], [6, -4]], { w: 1.4, id: 152 });
+  if (!o.empty) { ctx.fillStyle = '#4a2a18'; ctx.fillRect(-6, -12, 12, 2.4); }
+  ctx.restore();
+}
+function steam(x, y, u, a = 1) {
+  ctx.save(); ctx.strokeStyle = `rgba(250,250,245,${.5 * a})`; ctx.lineWidth = 2;
+  for (let k = 0; k < 2; k++) { ctx.beginPath(); for (let i = 0; i < 8; i++) { const yy = y - i * 4, xx = x + k * 5 + Math.sin(u * 3 + i * .8 + k) * 2.5; ctx.lineTo(xx, yy); } ctx.stroke(); }
+  ctx.restore();
+}
+function pastel(x, y, o = {}) {
+  ctx.save(); ctx.translate(x, y);
+  if (!o.noPlate) { ink([[-18, 0], [18, 0], [14, 3], [-14, 3]], { fill: WHITE, w: 1.4, id: 160 }); }
+  if (!o.eaten) {
+    ink([[-11, -1], [11, -1], [9, -9], [-9, -9]], { fill: '#c98a3c', w: 1.4, id: 161 });
+    ink([[-9, -9], [-6, -12], [6, -12], [9, -9]], { fill: '#f0c95e', w: 1.2, id: 162 });
+    blob(-3, -10.5, 2.2, 1.2, '#5a2e12'); blob(3.5, -10, 1.6, 1, '#5a2e12');
+  } else { ctx.fillStyle = '#c98a3c'; for (const [a, b] of [[-6, -1.5], [2, -1], [7, -2]]) ctx.fillRect(a, b, 2, 1.5); }
+  ctx.restore();
+}
+
+// The deck chair: a wooden frame with a striped canvas sling.
+// Local drawing coordinates face right (backrest on the left), origin on the ground at its middle.
+// f = 0 folded flat, 1 open. sag deepens the canvas when someone drops into it.
+const CANVAS = ['#c8463c', '#f3eee2'];
+function chairGeom(f, sag = 0) {
+  const O = { r1: [[58, 0], [-80, -126]], r2: [[-62, 0], [42, -54]], cv: [[-76, -120], [-18, -36 + sag], [42, -54]] };
+  const F = { r1: [[76, -5], [-76, -5]], r2: [[-72, -11], [72, -11]], cv: [[-72, -8], [0, -8], [72, -8]] };
+  const m = (a, b) => a.map((p, i) => mix(p, b[i], f));
+  return { r1: m(F.r1, O.r1), r2: m(F.r2, O.r2), cv: m(F.cv, O.cv) };
+}
+// t: { x, y, s, d, rot, piv (local point placed at x, y), f, sag }
+function chairXf(t, lx, ly) {
+  const [px, py] = t.piv || [0, 0], c = Math.cos(t.rot || 0), sn = Math.sin(t.rot || 0);
+  const a = lx - px, b = ly - py, rx = a * c - b * sn, ry = a * sn + b * c;
+  return [t.x + (t.d || 1) * rx * (t.s || 1), t.y + ry * (t.s || 1)];
+}
+function deckChair(t, id) {
+  const g = chairGeom(t.f ?? 1, t.sag || 0);
+  ctx.save(); ctx.translate(t.x, t.y); ctx.scale((t.d || 1) * (t.s || 1), t.s || 1); ctx.rotate(t.rot || 0);
+  const [px, py] = t.piv || [0, 0]; ctx.translate(-px, -py);
+  const part = t.part || 'all';
+  if (part !== 'front') {
+    // the far side of the frame, a little behind the canvas
+    const f = t.f ?? 1, off = [-6 * f, -5 * f];
+    limb(g.r1.map(p => [p[0] + off[0], p[1] + off[1]]), 4.5, shade(WOOD, -.3), id + 3);
+    limb(g.r2, 5, shade(WOOD, -.18), id);
+    if (part === 'back') limb(g.r1, 5.5, WOOD, id + 2);
+    // the canvas sling, as a striped band along a curve, wide enough to show round a sitter
+    const [a, c, b] = g.cv, n = 12, pts = [];
+    for (let i = 0; i <= n; i++) { const s = i / n; pts.push([(1 - s) ** 2 * a[0] + 2 * (1 - s) * s * c[0] + s * s * b[0], (1 - s) ** 2 * a[1] + 2 * (1 - s) * s * c[1] + s * s * b[1] - 6 * f]); }
+    const bw = lerp(13, 22, f), band = strand(pts, bw, bw), L = band.slice(0, n + 1), Rr = band.slice(n + 1).reverse();
+    for (let i = 0; i < n; i++) { ctx.fillStyle = CANVAS[i % 2]; ctx.beginPath(); ctx.moveTo(...L[i]); ctx.lineTo(...L[i + 1]); ctx.lineTo(...Rr[i + 1]); ctx.lineTo(...Rr[i]); ctx.fill(); }
+    ink(band, { w: 1.6, id: id + 1, close: true });
+  }
+  // the near side of the frame, in front of whoever sits in it
+  if (part === 'all') limb(g.r1, 5.5, WOOD, id + 2);
+  if (part === 'front') limb([g.r1[0], mix(g.r1[0], g.r1[1], .5)], 5.5, WOOD, id + 4);
+  ctx.restore();
+}
+
+// The gull. x, y are its feet; d = 1 faces right.
+const GULL = { body: '#f4f3ee', wing: '#9aa3a8', tip: '#262626', beak: '#e7c037', leg: '#e0a878' };
+function gull(o) {
+  const s = o.s || 1, d = o.d || 1, id = o.id || 400;
+  const sq = o.squash || 0, hb = o.hop || 0;
+  const p = (a, b) => [o.x + d * a * s * (1 + sq * .25), o.y + (b * (1 - sq * .2) - hb) * s];
+  limb([p(-3, -12), p(-5, 0)], 2, GULL.leg, id);
+  limb([p(4, -12), p(3, 0)], 2, GULL.leg, id + 1);
+  ink([p(-28, -26), p(-44, -24), p(-40, -18), p(-24, -18)], { fill: GULL.wing, w: 1.4, id: id + 2 });
+  ink(ellPts([0, 0], 1, 1, 14).map(([a, b]) => p(a * 25, -22 + b * 12)), { fill: GULL.body, w: 1.8, id: id + 3 });
+  const hx = 18 + (o.hx || 0), hy = -38 + (o.hy || 0) + (o.bob || 0);
+  ink([p(10, -28), p(hx - 2, hy + 4), p(hx + 4, hy + 6), p(18, -22)], { fill: GULL.body, w: 1.4, id: id + 4 });
+  const rf = o.ruffle || 0;
+  ink([p(-14 - rf * 4, -30 - rf * 6), p(-36 - rf * 6, -26 - rf * 8), p(-46, -20 - rf * 4), p(-20, -18), p(6, -20)], { fill: GULL.wing, w: 1.6, id: id + 5 });
+  ink([p(-36 - rf * 6, -26 - rf * 8), p(-48, -21 - rf * 4), p(-40, -19)], { fill: GULL.tip, w: 1.2, id: id + 6 });
+  ink(ellPts([0, 0], 1, 1, 10).map(([a, b]) => p(hx + a * 9, hy + b * 8.5)), { fill: GULL.body, w: 1.6, id: id + 7 });
+  const open = o.beak || 0;
+  ink([p(hx + 7, hy - 1), p(hx + 19, hy + 1 - open * 2), p(hx + 7, hy + 3)], { fill: GULL.beak, w: 1.3, id: id + 8 });
+  if (open > 0) ink([p(hx + 7, hy + 3), p(hx + 17, hy + 5 + open * 3), p(hx + 7, hy + 5)], { fill: GULL.beak, w: 1.3, id: id + 9 });
+  blob(...p(hx + 15, hy + 2), 1.5 * s, 1.5 * s, '#c43b2e');
+  if (o.carry) { const q = p(hx + 16, hy + 5); ctx.save(); ctx.translate(q[0], q[1]); ctx.scale(d * .8 * s, .8 * s); ctx.rotate(.3); pastel(0, 6, { noPlate: true }); ctx.restore(); }
+  const e = p(hx + 3, hy - 2);
+  if (o.blink) ink([[e[0] - 2.5 * s, e[1]], [e[0] + 2.5 * s, e[1]]], { w: 1.4, id: id + 10 });
+  else { blob(e[0], e[1], 2.4 * s, 2.4 * s, '#f2d64a'); blob(e[0] + d * .5 * s, e[1], 1.2 * s, 1.4 * s, '#1a1a1a'); }
+  if (o.gulp) ink(ellPts(p(14, -30), 6 * s * o.gulp, 5 * s * o.gulp, 8), { fill: GULL.body, w: 1.4, id: id + 11 });
+}
+function flyingGull(x, y, s, u, id) {
+  const f = Math.sin(u * 7) * .6;
+  ink([[x - 22 * s, y - 6 * s * f], [x - 10 * s, y - 2 * s], [x, y + 2 * s], [x + 10 * s, y - 2 * s], [x + 22 * s, y - 6 * s * f]], { w: 2.2 * s, id });
+}
+
+// ---------- the man ----------
+const ZE = { r: 21, neck: 7, torso: 68, ua: 36, fa: 34, th: 47, sh: 45, chest: 19, back: 15, belly: 10, arm: 10, leg: 12, foot: 15 };
+const ZC = { skin: '#e3ad86', nose: '#dd9474', jacket: '#3b5478', pants: '#6c6b70', shoes: '#5b3b25', cap: '#7b6a50', hair: '#dcd7cd', mous: '#d2cbbf' };
+
+// The head, in profile. C is its centre, ang its tilt; d = 1 faces right.
+function zeHead(C, r, ang, d, o, id) {
+  const ca = Math.cos(ang), sa = Math.sin(ang);
+  const hp = (hx, hy) => { const x = d * hx * r, y = hy * r; return [C[0] + x * ca - y * sa, C[1] + x * sa + y * ca]; };
+  const E = (cx, cy, rx, ry, n = 12) => ellPts([0, 0], 1, 1, n).map(([a, b]) => hp(cx + a * rx, cy + b * ry));
+  ink(E(0, 0, 1, 1.05, 16), { fill: ZC.skin, w: 2.1, id: id + 2 });
+  const fr = [];
+  for (let i = 0; i <= 8; i++) { const a = lerp(2.0, 3.9, i / 8); fr.push(hp(Math.cos(a) * 1.06, Math.sin(a) * 1.08)); }
+  for (let i = 8; i >= 0; i--) { const a = lerp(2.0, 3.9, i / 8); fr.push(hp(Math.cos(a) * .8, Math.sin(a) * .84 + .04)); }
+  ink(fr, { fill: shade(ZC.hair, -.12), w: 1.4, id: id + 1 });
+  if (o.capOff) {
+    ink([hp(-.95, .05), hp(-.85, -.35), hp(-.6, -.3), hp(-.3, -.05)], { fill: ZC.hair, w: 1.3, id: id + 3 });
+    ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = .12 * r; ctx.lineCap = 'round';
+    const a = hp(-.35, -.78), b = hp(.15, -.88); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); ctx.restore();
+  }
+  // ear
+  ink(E(-.12, .14, .17, .26, 8), { fill: ZC.skin, w: 1.5, id: id + 5 });
+  ink([hp(-.14, .04), hp(-.06, .14), hp(-.14, .24)], { w: 1.1, id: id + 6 });
+  // cheek, nose, moustache
+  ctx.save(); ctx.globalAlpha = .35; ctx.fillStyle = '#d9806a'; const ch = hp(.42, .3); ctx.beginPath(); ctx.ellipse(ch[0], ch[1], .2 * r, .14 * r, 0, 0, 7); ctx.fill(); ctx.restore();
+  const wide = o.wide || 0, lid = o.lid ?? .35, lk = o.look || [0, 0], big = 1 + wide * .55;
+  // eye
+  const ex = .5, ey = -.1;
+  if (o.blink || lid >= .95) ink([hp(ex - .13, ey + .02), hp(ex + .13, ey + .04)], { w: 1.8, id: id + 8 });
+  else {
+    if (wide > .15) ink(E(ex, ey, .14 * big, .17 * big, 10), { fill: '#fbf8f0', w: 1.4, id: id + 9 });
+    const p = hp(ex + lk[0] * .06, ey + lk[1] * .07);
+    blob(p[0], p[1], .085 * r * (wide > .15 ? .85 : 1), .12 * r * (wide > .15 ? .9 : 1), '#1e1612', ang);
+    blob(p[0] + .03 * r, p[1] - .045 * r, .032 * r, .032 * r, '#fff');
+    if (o.glint) blob(p[0] - .02 * r, p[1] + .02 * r, .045 * r * o.glint, .045 * r * o.glint, '#ffd36a');
+    if (lid > .02) {
+      const t = ey - .17 * big, bt = t + lid * .34 * big;
+      ink([hp(ex - .17, t - .02), hp(ex + .17, t - .04), hp(ex + .17, bt), hp(ex - .17, bt + .02)], { fill: ZC.skin, stroke: false, id: id + 10, sharp: true });
+      ink([hp(ex - .16, bt + .02), hp(ex + .16, bt)], { w: 1.5, id: id + 11 });
+    }
+  }
+  const up = o.brow || 0, wo = o.worry || 0;
+  limb([hp(.33, -.32 - up * .16 + wo * .02), hp(.69, -.36 - up * .16 - wo * .12)], .12 * r, ZC.hair, id + 12);
+  ink(E(1.0, .14, .32, .25, 10), { fill: ZC.nose, w: 1.7, id: id + 13 });
+  const m = o.mouth || 'flat', mx = .74, my = .64;
+  if (m === 'o') ink(E(mx, my + .02, .08, .1, 8), { fill: '#6a2a24', w: 1.4, id: id + 14 });
+  else if (m === 'sigh') ink(E(mx, my, .1, .07, 8), { fill: '#6a2a24', w: 1.4, id: id + 14 });
+  else if (m === 'smile') ink([hp(mx - .14, my - .06), hp(mx, my + .05), hp(mx + .14, my - .04)], { w: 1.6, id: id + 14 });
+  else if (m === 'grin') ink([hp(mx - .18, my - .08), hp(mx + .16, my - .1), hp(mx + .12, my + .04), hp(mx - .02, my + .1), hp(mx - .15, my + .02)], { fill: '#7a2e26', w: 1.5, id: id + 14 });
+  else if (m === 'tight') ink([hp(mx - .12, my - .02), hp(mx + .12, my + .02)], { w: 1.8, id: id + 14 });
+  else ink([hp(mx - .12, my), hp(mx + .12, my + .01)], { w: 1.6, id: id + 14 });
+  const bri = o.bristle || 0;
+  ink([hp(.52, .36), hp(.74, .28 - bri * .08), hp(1.02, .38 - bri * .06), hp(1.12, .5 + bri * .06), hp(.96, .52), hp(.78, .47), hp(.6, .52 + bri * .05), hp(.48, .44)], { fill: ZC.mous, w: 1.5, id: id + 15 });
+  if (!o.capOff) {
+    const L = o.capLift || 0;
+    const cp = [[-1.12, .0], [-1.06, -.55], [-.62, -1.1], [.1, -1.22], [.78, -.96], [1.18, -.62], [1.58, -.44], [1.52, -.31], [.96, -.36], [.2, -.42], [-.6, -.26]].map(([a, b]) => hp(a, b - L));
+    ink(cp, { fill: ZC.cap, w: 2, id: id + 16 });
+    ink([hp(.96, -.37 - L), hp(1.5, -.35 - L)], { w: 1.2, stroke: 'rgba(40,30,20,.5)', id: id + 17 });
+    ink([hp(-.5, -.9 - L), hp(.2, -1.0 - L), hp(.8, -.8 - L)], { w: 1, stroke: 'rgba(40,30,20,.35)', id: id + 18 });
+  }
+  return hp;
+}
+// The flat cap on its own (when he has run out from under it).
+function capAlone(x, y, rot, s, id) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.scale(s, s);
+  const r = ZE.r, cp = [[-1.12, .0], [-1.06, -.55], [-.62, -1.1], [.1, -1.22], [.78, -.96], [1.18, -.62], [1.58, -.44], [1.52, -.31], [.96, -.36], [.2, -.42], [-.6, -.26]].map(([a, b]) => [a * r, (b + .5) * r]);
+  ink(cp, { fill: ZC.cap, w: 2, id });
+  ctx.restore();
+}
+
+// The man in profile (d = 1 faces right). x, y is the hip. Hands are relative to the shoulders
+// and feet to the hip, in local units mirrored by d, unless handsAbs / feetAbs are given.
+function man(o) {
+  const b = ZE, s = o.s || 1, d = o.d || 1, id = o.id || 200;
+  const lean = o.lean || 0, tilt = o.tilt || 0, hunch = o.hunch || 0;
+  const Hx = o.x, Hy = o.y;
+  const U = [d * Math.sin(lean), -Math.cos(lean)], F = [d * Math.cos(lean), Math.sin(lean)];
+  const P = (v, h) => [Hx + (F[0] * v + U[0] * h) * s, Hy + (F[1] * v + U[1] * h) * s];
+  const S = P(-b.back * .1, b.torso * .86 + hunch * 7), S2 = P(-b.back * .4, b.torso * .84 + hunch * 7);
+  const loc = (O, q) => [O[0] + d * q[0] * s, O[1] + q[1] * s];
+  const hands = [0, 1].map(i => (o.handsAbs && o.handsAbs[i]) || loc(i ? S2 : S, (o.hands && o.hands[i]) || [i ? -4 : 6, b.ua + b.fa - 6]));
+  const feet = [0, 1].map(i => (o.feetAbs && o.feetAbs[i]) || loc([Hx, Hy], (o.feet && o.feet[i]) || [i ? -5 : 5, b.th + b.sh - 1]));
+  const armPick = o.elbowUp ? (e => -e[1] * .5 - d * e[0]) : (e => e[1] - d * e[0] * .3);
+  const out = { S, S2, P, hands };
+  function arm(i) {
+    const Sh = i ? S2 : S, [E, Hn] = ik(Sh, hands[i], b.ua * s, b.fa * s, armPick);
+    const c = i ? shade(ZC.jacket, -.2) : ZC.jacket;
+    limb([Sh, E], b.arm * s, c, id + 20 + i);
+    limb([E, Hn], (b.arm - 1) * s, c, id + 22 + i);
+    ink(ellPts(Hn, 4.8 * s, 4.6 * s, 7), { fill: i ? shade(ZC.skin, -.12) : ZC.skin, w: 1.4, id: id + 24 + i });
+    return Hn;
+  }
+  function leg(i) {
+    const [Kn, Ft] = ik([Hx, Hy], feet[i], b.th * s, b.sh * s, e => d * e[0] - e[1] * .05);
+    const c = i ? shade(ZC.pants, -.16) : ZC.pants;
+    limb([[Hx, Hy], Kn], b.leg * s, c, id + 30 + i);
+    limb([Kn, Ft], (b.leg - 1) * s, c, id + 32 + i);
+    const fa = o.toes ? -.4 : 0, ca = Math.cos(fa), sa = Math.sin(fa);
+    const sp = q => [Ft[0] + d * (q[0] * ca - q[1] * sa) * s, Ft[1] + (q[0] * sa * d * d + q[1] * ca) * s];
+    ink([sp([-5, -4]), sp([b.foot, -2]), sp([b.foot + 1, 3]), sp([-6, 3])], { fill: i ? shade(ZC.shoes, -.2) : ZC.shoes, w: 1.5, id: id + 34 + i });
+    return Kn;
+  }
+  // running so fast the legs are a wheel
+  function wheel() {
+    const c = P(4, -32), rr = 40 * s;
+    ctx.save(); ctx.globalAlpha = .55;
+    for (let k = 0; k < 3; k++) { ctx.strokeStyle = k ? shade(ZC.pants, -.12) : ZC.pants; ctx.lineWidth = 12 * s; ctx.beginPath(); ctx.arc(c[0], c[1], rr * (.55 + k * .2), NOW * 40 + k * 2, NOW * 40 + k * 2 + 4); ctx.stroke(); }
+    ctx.globalAlpha = 1;
+    for (let k = 0; k < 4; k++) { const a = NOW * 46 + k * Math.PI / 2; blob(c[0] + Math.cos(a) * rr, c[1] + Math.sin(a) * rr, 9 * s, 5 * s, ZC.shoes, a); }
+    ctx.restore();
+    for (let k = 0; k < 3; k++) { const a = BOIL * 1.7 + k * 2.1; ink([[c[0] + Math.cos(a) * rr * 1.25, c[1] + Math.sin(a) * rr * 1.25], [c[0] + Math.cos(a + .8) * rr * 1.3, c[1] + Math.sin(a + .8) * rr * 1.3]], { w: 1.6, id: id + 40 + k }); }
+  }
+  if (o.propBack) o.propBack(out);
+  out.far = arm(1);
+  if (!o.wheel) leg(1);
+  const tp = [[-b.back * .85, -2], [b.chest * .8, -2], [b.chest + b.belly, b.torso * .28], [b.chest + b.belly * .55, b.torso * .56], [b.chest * .9, b.torso * .8], [b.chest * .45, b.torso * .98 + hunch * 6], [-b.back * .5, b.torso + hunch * 7], [-b.back * 1.05, b.torso * .72 + hunch * 4], [-b.back * .95, b.torso * .3]];
+  ink(tp.map(q => P(...q)), { fill: ZC.jacket, w: 2.1, id: id + 4 });
+  ink([P(b.chest * .55, b.torso * .96), P(b.chest + b.belly * .5, b.torso * .55), P(b.chest + b.belly * .9, b.torso * .25), P(b.chest * .8, 0)], { w: 1.2, stroke: 'rgba(20,28,40,.6)', id: id + 5 });
+  ink([P(-b.back * .2, -1), P(b.chest * .8, -1)], { w: 4 * s, stroke: shade(ZC.jacket, -.25), id: id + 6 });
+  if (o.wheel) wheel(); else leg(0);
+  if (o.elbowUp) out.near = arm(0);
+  const Nb = P(-b.back * .05, b.torso * .95 + hunch * 3);
+  const hd = o.headD || d, ha = lean + tilt;
+  const U2 = [d * Math.sin(ha), -Math.cos(ha)];
+  const C = [Nb[0] + U2[0] * (b.neck + b.r * .9) * s, Nb[1] + U2[1] * (b.neck + b.r * .9) * s];
+  limb([Nb, mid(Nb, C)], 9 * s, ZC.skin, id + 12);
+  // collar turned up against the wind
+  ink([P(-b.back * .7, b.torso * .92 + hunch * 6), P(-b.back * .55, b.torso * 1.12 + hunch * 6), P(b.chest * .2, b.torso * 1.06 + hunch * 5), P(b.chest * .5, b.torso * .94 + hunch * 5)], { fill: shade(ZC.jacket, -.1), w: 1.6, id: id + 13 });
+  out.head = C;
+  out.hp = zeHead(C, b.r * s, d * lean + hd * tilt, hd, o, id + 50);
+  if (o.prop) o.prop(out);
+  if (!o.elbowUp) out.near = arm(0);
+  if (o.propFront) o.propFront(out);
+  return out;
+}
+
+// ---------- effects ----------
+function dust(x, y, f, seed, s = 1, col = '190,180,160') {
+  if (f <= 0 || f >= 1) return;
+  const r = R(seed);
+  for (let i = 0; i < 9; i++) {
+    const a = r() * Math.PI, dd = (20 + r() * 50) * s * easeOut(f), rr = (12 + r() * 18) * s * (.6 + f);
+    ctx.fillStyle = `rgba(${col},${.55 * (1 - f)})`;
+    ctx.beginPath(); ctx.ellipse(x + Math.cos(a) * dd * 1.6 * (r() < .5 ? -1 : 1), y - Math.sin(a) * dd * .6, rr, rr * .7, 0, 0, 7); ctx.fill();
+  }
+}
+function speedLines(x0, x1, y, h, a, seed) {
+  if (a <= 0) return;
+  const r = R(seed); ctx.save(); ctx.lineCap = 'round';
+  for (let i = 0; i < 9; i++) {
+    const yy = y + (r() - .5) * h, xa = lerp(x0, x1, r() * .4), xb = lerp(x0, x1, .5 + r() * .5);
+    ctx.strokeStyle = `rgba(60,55,50,${a * (.35 + .4 * r())})`; ctx.lineWidth = 1.5 + r() * 2;
+    ctx.beginPath(); ctx.moveTo(xa, yy); ctx.lineTo(xb, yy); ctx.stroke();
+  }
+  ctx.restore();
+}
+// The streak a body leaves when it goes faster than drawing.
+function smear(x0, x1, y, a) {
+  if (a <= 0) return;
+  ctx.save(); ctx.globalAlpha = a;
+  const bands = [[-118, 18, ZC.cap], [-92, 22, ZC.skin], [-50, 46, ZC.jacket], [10, 30, ZC.pants], [44, 8, ZC.shoes], [-20, 12, CANVAS[0]]];
+  for (const [dy, h, c] of bands) {
+    const g = ctx.createLinearGradient(x0, 0, x1, 0); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, c);
+    ctx.fillStyle = g; ctx.fillRect(Math.min(x0, x1), y + dy - h / 2, Math.abs(x1 - x0), h);
+  }
+  ctx.restore();
+}
+function heatLines(x, y, w, u, a) {
+  ctx.save(); ctx.strokeStyle = `rgba(255,220,150,${.5 * a})`; ctx.lineWidth = 2;
+  for (let k = 0; k < 4; k++) { ctx.beginPath(); for (let i = 0; i < 7; i++) { const yy = y - i * 9 - frac(u * .6 + k * .25) * 20, xx = x + (k - 1.5) * w / 4 + Math.sin(u * 4 + i + k) * 3; ctx.lineTo(xx, yy); } ctx.stroke(); }
+  ctx.restore();
+}
+function sparkle(x, y, r, a) {
+  if (a <= 0) return;
+  ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = '#fff3c4';
+  ctx.beginPath();
+  for (let i = 0; i < 8; i++) { const ang = i * Math.PI / 4, rr = i % 2 ? r * .25 : r; ctx.lineTo(x + Math.cos(ang) * rr, y + Math.sin(ang) * rr); }
+  ctx.fill(); ctx.restore();
+}
+
+// ---------- the sunbeam ----------
+// ray: { open (hole in the cloud), reach (how far down it has come), r (size of the circle), cx }
+function rayGeom(ray) {
+  const z = CAM.z, A = scr(.45, RX, RY), C = scr(1, ray.cx, GS);
+  const rx = 100 * ray.r * z, ry = 22 * ray.r * z;
+  return { A, C, rx, ry, wa: rx * .32 + 4 * ray.open };
+}
+function rayPath(g, reach) {
+  const B = [lerp(g.A[0], g.C[0], reach), lerp(g.A[1], g.C[1], reach)], wb = lerp(g.wa, g.rx, reach);
+  ctx.beginPath(); ctx.moveTo(g.A[0] - g.wa, g.A[1]); ctx.lineTo(g.A[0] + g.wa, g.A[1]); ctx.lineTo(B[0] + wb, B[1]); ctx.lineTo(B[0] - wb, B[1]); ctx.closePath();
+  if (reach >= 1) ctx.ellipse(g.C[0], g.C[1], g.rx, g.ry, 0, 0, 7);
+}
+function sunPool(ray) {
+  if (!ray || ray.reach < 1 || ray.r <= 0) return;
+  const g = rayGeom(ray);
+  ctx.save();
+  const gr = ctx.createRadialGradient(g.C[0], g.C[1], 0, g.C[0], g.C[1], g.rx);
+  gr.addColorStop(0, '#ffe7a8'); gr.addColorStop(.8, '#f7cf7a'); gr.addColorStop(1, 'rgba(240,190,100,.4)');
+  ctx.fillStyle = gr; ctx.beginPath(); ctx.ellipse(g.C[0], g.C[1], g.rx, g.ry, 0, 0, 7); ctx.fill();
+  ctx.restore();
+}
+// The beam as light in the air: behind the characters at full strength (k = 1), and as a thin
+// haze in front of them (k small).
+function beamAir(ray, k) {
+  if (!ray || ray.open <= 0 || ray.r <= 0 || ray.reach <= 0) return;
+  const g = rayGeom(ray);
+  ctx.save(); rayPath(g, ray.reach); ctx.clip();
+  const B = [lerp(g.A[0], g.C[0], ray.reach), lerp(g.A[1], g.C[1], ray.reach)];
+  const lg = ctx.createLinearGradient(g.A[0], g.A[1], B[0], B[1]);
+  lg.addColorStop(0, `rgba(255,244,210,${.6 * k})`);
+  if (ray.reach < 1) { lg.addColorStop(.75, `rgba(255,236,190,${.35 * k})`); lg.addColorStop(1, 'rgba(255,230,170,0)'); }
+  else lg.addColorStop(1, `rgba(255,230,170,${.2 * k})`);
+  ctx.fillStyle = lg; ctx.fillRect(0, 0, W, H);
+  // motes drifting in the light
+  const r = R(500); ctx.fillStyle = `rgba(255,250,230,${.85 * Math.min(1, k * 3)})`;
+  for (let i = 0; i < 40; i++) {
+    const f = frac(r() + NOW * .03 * (r() + .3)), x = lerp(g.A[0], g.C[0], f) + (r() - .5) * lerp(g.wa, g.rx, f) * 1.6 + Math.sin(NOW + i) * 3, y = lerp(g.A[1], g.C[1], f);
+    if (f < ray.reach) { ctx.beginPath(); ctx.arc(x, y, .8 + r() * 1.2, 0, 7); ctx.fill(); }
+  }
+  ctx.restore();
+}
+// Warm whatever stands inside the beam, then add the ring where it first lands.
+function beam(ray) {
+  if (!ray || ray.open <= 0 || ray.r <= 0) return;
+  const g = rayGeom(ray);
+  if (ray.reach >= 1) {
+    ctx.save(); rayPath(g, ray.reach); ctx.clip();
+    ctx.globalCompositeOperation = 'soft-light'; ctx.fillStyle = 'rgba(255,200,100,.5)'; ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'screen'; ctx.fillStyle = 'rgba(255,220,150,.07)'; ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+  if (ray.reach > 0) beamAir(ray, .18);
+  // where the light first hits the sand, a ring flashes out
+  if (ray.flash > 0 && ray.flash < 1) {
+    ctx.save(); ctx.strokeStyle = `rgba(255,236,180,${1 - ray.flash})`; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.ellipse(g.C[0], g.C[1], g.rx * (1 + ray.flash * .8), g.ry * (1 + ray.flash * .8), 0, 0, 7); ctx.stroke(); ctx.restore();
+  }
+}
+
+// ---------- the whole place, plane by plane ----------
+// st: { ray, chars (draws the character plane), cafe (draws the terrace's furniture and people) }
+function world(st) {
+  layer(.05, skyLayer);
+  layer(.15, farClouds);
+  layer(.3, sea);
+  layer(.45, () => lowClouds(st.ray ? st.ray.open : 0));
+  layer(.5, surf);
+  layer(.6, farBeach);
+  layer(.85, building);
+  layer(1, () => {
+    terrace();
+    if (st.furrow) furrow(st.furrow);
+    awning();
+  });
+  sunPool(st.ray);
+  beamAir(st.ray, 1);
+  layer(1, () => { if (st.cafe) st.cafe(); if (st.chars) st.chars(); });
+  beam(st.ray);
+  if (st.front) layer(1, st.front);
+}
+// The groove the dragged chair cut across the sand, and his few enormous strides.
+function furrow(x1) {
+  const r = R(11);
+  ctx.save(); ctx.strokeStyle = 'rgba(110,98,78,.75)'; ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  for (let x = EDGE + 120; x < x1; x += 30) ctx.lineTo(x, GS + 6 + Math.sin(x * .02) * 2 + (r() - .5) * 2);
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(250,245,232,.5)'; ctx.lineWidth = 1.5; ctx.beginPath();
+  for (let x = EDGE + 120; x < x1; x += 30) ctx.lineTo(x, GS + 9 + Math.sin(x * .02) * 2);
+  ctx.stroke();
+  for (let x = EDGE + 330; x < x1 - 80; x += 290) blob(x, GS - 8, 9, 3, 'rgba(110,98,78,.5)');
+  ctx.restore();
+}
+
+// ---------- the café table and its things ----------
+const SEAT = { x: 540, y: GT - 52 };
+const FOLDED_AT_WALL = { x: 476, y: GT - 2, d: 1, rot: 1.27, piv: [76, -5], f: 0 };
+function cafeSet(o = {}) {
+  if (o.chairAtWall !== false) deckChair(FOLDED_AT_WALL, 700);
+  cafeChair(530, GT, 1, 600);
+  if (o.man) man(o.man);
+  if (o.capOnChair) capAlone(522, GT - 54, -.1, 1, 640);
+  cafeTable(TX, 610);
+  if (!o.cupHeld) cup(TX - 32 + (o.cupDx || 0), GT - 80 - (o.cupDy || 0), { rot: o.cupRot || 0, noSaucer: false });
+  if (o.cupHeld === 'lifted') cup(TX - 32, GT - 80, { noSaucer: false, empty: true, rot: 0 }) ;
+  pastel(TX + 20, GT - 80, { eaten: o.eaten });
+  if (o.steam) steam(TX - 33, GT - 96, NOW, o.steam);
+}
+
+// ---------- shots ----------
+function shotTitle(u) {
+  CAM = { x: K(u, [[0, 2300], [6, 2380]]), y: 140, z: .95 };
+  world({});
+  flyingGull(lerp(160, 1120, u / 6), 120 + Math.sin(u * 1.4) * 14, 1.1, u, 900);
+  ctx.save(); ctx.textAlign = 'center';
+  ctx.globalAlpha = ease(seg(u, .5, 1.6)) * (1 - ease(seg(u, 4.6, 5.4)));
+  ctx.shadowColor = 'rgba(40,40,40,.35)'; ctx.shadowBlur = 12;
+  ctx.fillStyle = '#f4efe2'; ctx.font = 'italic 76px ' + SERIF; ctx.fillText('O Raio de Sol', W / 2, H / 2 - 30);
+  ctx.restore();
+}
+
+// The terrace on a grey August afternoon.
+function shotEstablish(u) {
+  CAM = { x: K(u, [[0, 900], [10, 760]]), y: K(u, [[0, 330], [10, 380]]), z: K(u, [[0, .62], [10, .8]]) };
+  const shiver = u > 6 && u < 7 ? Math.sin(u * 60) * 1.2 : 0;
+  world({
+    cafe: () => cafeSet({ man: { ...SEAT, x: SEAT.x + shiver, lean: .06, feet: [[50, 47], [44, 49]], hunch: .6,
+      handsAbs: [[TX - 30, GT - 84], null], hands: [null, [22, 50]], tilt: .05, lid: .5, look: [1, 0], mouth: 'flat' }, steam: 1 }),
+    chars: () => gull({ x: EDGE - 31, y: GT - 42, d: -1, hy: Math.abs(Math.sin(u * 1.3)) > .97 ? 6 : 0, blink: frac(u / 3.1) > .95 }),
+  });
+}
+
+// He sips, looks up at the sky, sighs, and glances at the deck chair he brought.
+function shotSigh(u) {
+  CAM = { x: K(u, [[0, 590], [9, 586]]), y: K(u, [[0, 452], [9, 448]]), z: K(u, [[0, 1.75], [9, 1.85]]) };
+  const mouthP = [563, 470];
+  const hand = K(u, [[0, mouthP], [1.6, mouthP], [2.3, [TX - 30, GT - 84]]]);
+  const lifted = u < 2.15;
+  const tilt = K(u, [[0, .05], [2.6, .05], [3.5, -.38], [4.7, -.38], [5.2, -.44], [6.2, .14], [6.8, .1], [7.6, .05], [9, .08]]);
+  const hunch = K(u, [[0, .5], [4.6, .5], [5.2, 1.1], [6.2, .1], [9, .2]]);
+  const back = u > 6.6 && u < 7.8;
+  const look = back ? [1, .2] : (u > 2.8 && u < 6) ? [.4, -1] : [1, .1];
+  world({
+    cafe: () => cafeSet({ cupHeld: lifted ? 'lifted' : false, steam: lifted ? 0 : .6, man: {
+      ...SEAT, lean: .05, feet: [[50, 47], [44, 49]], hunch, tilt, headD: back ? -1 : 1,
+      handsAbs: [hand, null], hands: [null, [22, 50]],
+      lid: K(u, [[0, .6], [1.6, .6], [2.4, .3], [5.4, .3], [6, .7], [9, .55]]), look,
+      worry: K(u, [[3, 0], [4, 1]]), mouth: u > 4.6 && u < 5.3 ? 'o' : u > 5.3 && u < 6.3 ? 'sigh' : 'flat', blink: u > 1.0 && u < 1.15,
+      prop: lifted ? (m => cup(m.hands[0][0] + 4, m.hands[0][1] + 6, { noSaucer: true, rot: -.5 })) : null,
+    } }),
+    chars: () => {
+      // his breath, in August
+      if (u > 5.4 && u < 7) { const f = seg(u, 5.4, 7); ctx.save(); ctx.globalAlpha = .45 * Math.sin(f * Math.PI); blob(590 + f * 40, 462 - f * 16, 10 + f * 16, 6 + f * 8, '#f2f2ee'); ctx.restore(); }
+    },
+  });
+}
+
+// Up in the cloud a hole opens, and one thin beam comes down onto the sand.
+function shotRay(u) {
+  CAM = { x: K(u, [[0, 2350], [2.4, 2350], [4.8, 2420], [7.5, 2430]]), y: K(u, [[0, -250], [2.4, -250], [4.8, 300], [7.5, 330]]), z: K(u, [[0, 1], [2.4, 1], [4.8, .82], [7.5, .8]]) };
+  const ray = { open: easeOut(seg(u, .8, 1.9)), reach: ease(seg(u, 2.1, 4.5)), r: 1, cx: LX, flash: seg(u, 4.5, 5.3) };
+  world({ ray });
+}
+
+// The take.
+function shotTake(u) {
+  CAM = { x: 572, y: 448, z: K(u, [[0, 3.0], [1.6, 3.05], [1.75, 3.25], [5, 3.3]]) };
+  const take = u > 1.7, set = u > 3.3;
+  const jit = take && !set ? Math.sin(u * 80) * .6 : 0;
+  world({
+    cafe: () => cafeSet({ steam: .5, man: {
+      ...SEAT, x: SEAT.x + jit, lean: .05, feet: [[50, 47], [44, 49]], hunch: .3, tilt: take ? -.06 : .08,
+      handsAbs: [[TX - 30, GT - 84], null], hands: [null, [22, 50]],
+      lid: set ? .32 : take ? 0 : .55, wide: take && !set ? 1 : 0, look: u > 1.25 ? [1, -.3] : [.3, .5],
+      brow: set ? -.35 : take ? 1 : 0, capLift: take && !set ? K(u, [[1.7, 0], [1.85, .45], [2.4, .32]]) : 0,
+      mouth: set ? 'tight' : take ? 'o' : 'flat', bristle: take && !set ? 1 : 0, glint: u > 1.15 ? 1 : 0,
+    } }),
+  });
+}
+
+// He grabs the chair, winds up, and is gone; the cap stays behind for a moment.
+function shotDash(u) {
+  const shake = u > 1.45 && u < 1.75 ? Math.sin(u * 90) * 6 * (1 - seg(u, 1.45, 1.75)) : 0;
+  CAM = { x: 900 + shake, y: 466, z: 1 };
+  const zip = 1.45, gone = u >= zip;
+  const lean = K(u, [[0, .05], [.8, .05], [1.05, -.28], [1.2, .55]]);
+  const rise = K(u, [[0, 0], [.8, 0], [1.05, 16], [1.2, 10]]);
+  const grabbed = u > .75;
+  const handGrab = K(u, [[0, [TX - 30, GT - 84]], [.45, [TX - 30, GT - 84]], [.75, [500, 470]]]);
+  const headAt = [548, 446 - rise];
+  const capFall = seg(u, 2.0, 2.4);
+  const capY = u < 2.0 ? headAt[1] - 18 - 8 * Math.sin(seg(u, zip, 2) * Math.PI) * .3 : lerp(headAt[1] - 18, GT - 66, easeIn(capFall));
+  const cupUp = u < zip ? 0 : u < 1.9 ? Math.sin(seg(u, zip, 1.9) * Math.PI * .5) * 56 : 56 * (1 - easeIn(seg(u, 1.9, 2.3)));
+  const cupRot = gone ? (u < 2.3 ? seg(u, zip, 2.3) * Math.PI * 4 : Math.sin(u * 30) * .15 * (1 - seg(u, 2.3, 2.6))) : 0;
+  world({
+    ray: { open: 1, reach: 1, r: 1, cx: LX },
+    furrow: gone ? CX - 60 : 0,
+    cafe: () => {
+      cafeSet({
+        chairAtWall: !grabbed, capOnChair: u >= 2.4, cupDy: cupUp, cupRot,
+        man: gone ? null : {
+          ...SEAT, y: SEAT.y - rise, lean, feet: u > 1.2 ? null : [[50, 47 + rise], [44, 49 + rise]], wheel: u > 1.2, hunch: .2,
+          tilt: -.05, handsAbs: [u > .95 ? null : [TX - 30, GT - 84], grabbed ? handGrab : null],
+          hands: [u > .95 ? [30, 20] : null, [22, 50]], lid: .2, brow: -.5, look: [1, 0], mouth: 'tight',
+          capLift: u > 1.25 ? .15 : 0,
+          propBack: grabbed ? (m => deckChair({ x: m.hands[1][0], y: m.hands[1][1], d: 1, rot: Math.PI - .55 + (u > 1.2 ? .2 : 0), piv: [-76, -5], f: 0 }, 700)) : null,
+        },
+      });
+      if (gone && u < 2.4) capAlone(headAt[0] - 4, capY, 0, 1, 640);
+      if (gone) dust(560, GT - 30, seg(u, zip, 3.2), 21, 1.6);
+      // paper napkins blown off the table
+      if (gone) for (let k = 0; k < 3; k++) { const f = seg(u, zip + k * .08, 3.2); if (f > 0 && f < 1) ink([[TX + 10 + f * (500 + k * 150), GT - 90 - Math.sin(f * 5 + k) * 30 - f * 40], [TX + 22 + f * (500 + k * 150), GT - 96 - Math.sin(f * 5 + k) * 30 - f * 40], [TX + 18 + f * (500 + k * 150), GT - 84 - Math.sin(f * 5 + k) * 30 - f * 40]], { fill: '#f7f4ec', w: 1.2, id: 660 + k }); }
+    },
+    chars: () => {
+      smear(560, 1900, GT - 50, u > zip && u < 1.8 ? 1 - seg(u, zip, 1.8) : 0);
+      speedLines(560, 1900, GT - 60, 120, u > zip && u < 2 ? 1 - seg(u, zip, 2) : 0, 31);
+      const blown = u > zip + .05 && u < 2.2;
+      gull({ x: EDGE - 31, y: GT - 42, d: u > 2.9 ? -1 : 1, squash: blown ? .6 * (1 - seg(u, zip, 2.2)) : 0, ruffle: blown ? 1 : 0,
+        hy: u > 3.6 && u < 4.6 ? 4 : 0, blink: u > 4.8 && u < 4.95 });
+      if (u > zip) for (let k = 0; k < 4; k++) { const f = seg(u, zip, 3.4 + k * .3); if (f < 1) ink([[EDGE - 40 + f * (120 + k * 60), GT - 80 - f * 50 + Math.sin(f * 9 + k) * 12], [EDGE - 32 + f * (120 + k * 60), GT - 83 - f * 50 + Math.sin(f * 9 + k) * 12]], { w: 2.4, stroke: '#ece9e2', id: 680 + k }); }
+    },
+  });
+}
+
+// Sitting in the deck chair: the hip sinks into the canvas, the back lies along the backrest,
+// and, once he is happy, the arms hang over the sides.
+const SEAT_IN_CHAIR = sag => [-14, -64 + sag * .5];
+const LEAN_IN_CHAIR = -.76;
+
+// He skids into the light, opens the chair in three snaps, drops into it, shuffles into the sun.
+const CHAIR0 = CX - 50;
+function shotArrive(u) {
+  CAM = { x: K(u, [[0, CX + 10], [4.8, CX + 10], [9.5, CX - 30]]), y: K(u, [[0, 470], [4.8, 470], [9.5, 520]]), z: K(u, [[0, 1.5], [4.8, 1.5], [9.5, 2.3]]) };
+  const ray = { open: 1, reach: 1, r: 1, cx: LX };
+  const runIn = seg(u, .6, 1.0), skid = seg(u, 1.0, 1.35);
+  const hx = u < 1.0 ? lerp(CX - 900, CX + 40, runIn) : lerp(CX + 40, CX + 78, easeOut(skid));
+  // the chair: dragged, then opened, then shuffled into the sun
+  const hop1 = seg(u, 3.85, 4.0), hop2 = seg(u, 4.25, 4.4);
+  const chairX = CHAIR0 + 25 * ease(hop1) + 25 * ease(hop2);
+  const hopY = Math.sin(hop1 * Math.PI) * 8 + Math.sin(hop2 * Math.PI) * 8;
+  const fOpen = snap(u, [[0, 0], [1.85, .38], [2.1, .72], [2.35, 1]]);
+  const sag = u > 3.1 ? K(u, [[3.1, 12], [3.25, 4], [3.4, 8]]) : 0;
+  const seated = u > 3.1, flop = seg(u, 2.8, 3.1);
+  const chair = { x: chairX, y: GS - hopY, d: 1, f: fOpen, sag };
+  const top = chairXf(chair, ...chairGeom(fOpen).r2[1]);
+  world({
+    ray, furrow: CX - 60,
+    chars: () => {
+      if (u < .6) return;
+      if (u < 1.55) {
+        // running in and skidding, dragging the folded chair
+        const runner = u < 1.0;
+        const lurch = K(u, [[1.38, 0], [1.45, .25], [1.6, 0]]);
+        const handFar = [hx - 46, GS - 52];
+        man({ x: hx, y: GS - 92 + (runner ? 0 : 12), d: 1, lean: runner ? .5 : -.55 + lurch, wheel: runner, capOff: true,
+          feet: runner ? null : [[66, 74], [-6, 80]], hands: [runner ? [30, 10] : [44, -14], null], handsAbs: [null, handFar],
+          lid: 0, wide: .4, brow: -.4, look: [1, 0], mouth: runner ? 'tight' : 'o',
+          propBack: m => deckChair({ x: m.hands[1][0], y: m.hands[1][1], d: 1, rot: Math.PI - .32, piv: [-76, -5], f: 0 }, 700) });
+        if (runner) { smear(hx - 500, hx - 40, GS - 40, .8); speedLines(hx - 600, hx - 60, GS - 70, 120, 1, 41); }
+        else { for (let k = 0; k < 8; k++) { const f = seg(u, 1.0 + k * .02, 1.5 + k * .03), r = R(70 + k); if (f > 0 && f < 1) blob(hx + 50 + f * (40 + r() * 70), GS - 8 - Math.sin(f * Math.PI) * (20 + r() * 30), 3, 2.4, 'rgba(170,150,120,.8)'); } dust(hx + 30, GS - 6, seg(u, 1.0, 1.9), 72, 1); }
+        return;
+      }
+      if (u < 2.55) {
+        // he turns to face the chair and opens it: snap, snap, snap
+        deckChair(chair, 700);
+        const yank = u > 1.85 ? Math.max(0, 1 - frac((u - 1.85) / .25) * 3) : 0;
+        man({ x: CX + 70 + yank * 4, y: GS - 80, d: -1, lean: .62 - yank * .12, capOff: true, feet: [[24, 80], [-14, 82]],
+          handsAbs: [top, [top[0] + 8, top[1] - 4]], lid: .1, brow: -.3, look: [0, .6], mouth: 'tight' });
+        for (const [t0, sd] of [[1.85, 1], [2.1, 2], [2.35, 3]]) { const f = seg(u, t0, t0 + .25); if (f > 0 && f < 1) { ctx.save(); ctx.globalAlpha = 1 - f; for (let k = 0; k < 5; k++) { const a = k * 1.25 + sd; ink([[top[0] + Math.cos(a) * 14, top[1] + Math.sin(a) * 14], [top[0] + Math.cos(a) * (22 + f * 12), top[1] + Math.sin(a) * (22 + f * 12)]], { w: 2, id: 720 + k }); } ctx.restore(); } }
+        dust(chairX, GS - 4, seg(u, 2.35, 3.2), 73, .8);
+        return;
+      }
+      deckChair({ ...chair, part: 'back' }, 700);
+      const seatHip = chairXf(chair, ...SEAT_IN_CHAIR(sag));
+      if (!seated) {
+        // turn round, crouch, and drop backwards into the canvas
+        const crouch = K(u, [[2.55, 0], [2.8, 14]]);
+        const st = [CX + 70, GS - 92 + crouch];
+        const arc = [lerp(st[0], seatHip[0], ease(flop)), lerp(st[1], seatHip[1], flop) - Math.sin(flop * Math.PI) * 30];
+        man({ x: arc[0], y: arc[1], d: 1, lean: lerp(.12, LEAN_IN_CHAIR, ease(flop)), capOff: true,
+          feet: flop > 0 ? [[lerp(10, 70, flop), lerp(88 - crouch, 50, flop)], [lerp(-8, 64, flop), lerp(88 - crouch, 54, flop)]] : [[10, 88 - crouch], [-8, 88 - crouch]],
+          hands: [[lerp(6, 30, flop), lerp(64, -20, flop)], [lerp(-4, 20, flop), lerp(64, -24, flop)]], lid: 0, wide: flop > 0 ? .6 : 0, look: [-1, 0], mouth: flop > 0 ? 'o' : 'flat' });
+        if (flop > .5) deckChair({ ...chair, part: 'front' }, 700);
+        return;
+      }
+      // in the chair
+      const bounce = K(u, [[3.1, 0], [3.22, -6], [3.4, 0]]);
+      const inLight = u > 4.4;
+      const stretch = ease(seg(u, 4.6, 5.3));
+      const lookFeet = u > 3.45 && u < 3.8;
+      const headOut = u > 3.45 && u < 4.4;
+      const breathe = Math.sin(u * 2.2) * 1.5 * stretch;
+      const hip = [seatHip[0], seatHip[1] + bounce];
+      man({ x: hip[0], y: hip[1], d: 1, lean: LEAN_IN_CHAIR, capOff: true,
+        tilt: lookFeet ? .55 : headOut ? -.15 : -.08 * stretch + breathe * .01,
+        feet: [[lerp(62, 90, stretch), lerp(62, 50, stretch)], [lerp(56, 84, stretch), lerp(64, 54, stretch)]], toes: stretch > .5,
+        hands: [[lerp(44, 6, stretch), lerp(40, 64, stretch)], [lerp(38, 0, stretch), lerp(42, 66, stretch)]],
+        hunch: -breathe * .3, lid: inLight ? (stretch > .8 ? 1 : .4) : .15, look: lookFeet ? [.6, .8] : headOut ? [-.4, -.8] : [1, -.4],
+        brow: headOut ? .4 : 0, worry: headOut ? 1 : 0, mouth: stretch > .8 ? 'grin' : headOut ? 'flat' : 'smile' });
+      deckChair({ ...chair, part: 'front' }, 700);
+      if (stretch > .8) heatLines(hip[0] - 30, hip[1] - 70, 120, u, seg(u, 5.3, 6.5));
+    },
+  });
+}
+
+// Meanwhile, at the café.
+function shotGull(u) {
+  CAM = { x: 610, y: 470, z: K(u, [[0, 2.1], [5, 2.18]]) };
+  const chew = u < 1.5 ? Math.abs(Math.sin(u * 9)) * 3 : 0;
+  world({
+    cafe: () => cafeSet({ capOnChair: true, eaten: true }),
+    chars: () => gull({ x: TX + 6, y: GT - 80, d: -1, s: 1.05, carry: u < 1.5, hy: chew, gulp: u > 1.5 && u < 2.2 ? Math.sin(seg(u, 1.5, 2.2) * Math.PI) : 0,
+      beak: u > 1.45 && u < 1.6 ? 1 : 0, blink: (u > 2.8 && u < 2.95) || (u > 3.6 && u < 3.75), hx: u > 2.4 ? -3 : 0 }),
+  });
+}
+
+// The circle shrinks; he folds himself up to stay inside it; it closes; he stays.
+const CHAIR1 = CHAIR0 + 50;
+function shotEnd(u) {
+  const pull = ease(seg(u, 8.8, 13.2));
+  CAM = { x: lerp(K(u, [[0, CX - 30], [6, CX - 50]]), 1840, pull), y: lerp(K(u, [[0, 520], [6, 520]]), 372, pull), z: lerp(K(u, [[0, 2.0], [6, 2.2]]), .52, pull) };
+  const chair = { x: CHAIR1, y: GS, d: 1, f: 1, sag: 8 };
+  const seatHip = chairXf(chair, ...SEAT_IN_CHAIR(8));
+  const r = K(u, [[0, 1], [1.2, 1], [3.6, .62], [5.4, .22], [6.2, 0]], f => f);
+  const curl = ease(seg(u, 2.2, 4.6)), tuck = ease(seg(u, 4.0, 5.6));
+  const settle = ease(seg(u, 8.2, 9.2));
+  const headX = seatHip[0] - 62 + curl * 24;
+  const ray = r > 0 ? { open: 1, reach: 1, r, cx: lerp(headX, LX, r ** .8) } : { open: clamp(1 - seg(u, 6.2, 7)), reach: 0, r: 0, cx: headX };
+  const k = curl * (1 - settle), tk = tuck * (1 - settle);
+  world({
+    ray: r > 0 ? ray : null, furrow: CX - 60,
+    chars: () => {
+      deckChair({ ...chair, part: 'back' }, 700);
+      const peek = u > 7.2 && u < 8.4;
+      const shiv = u > 7.7 && u < 8.1 ? Math.sin(u * 70) * 1.2 : 0;
+      const hip = [seatHip[0] + shiv, seatHip[1]];
+      const M = man({ x: hip[0], y: hip[1], d: 1, lean: lerp(LEAN_IN_CHAIR, -.42, k), capOff: true,
+        tilt: lerp(-.08, -.35, tk),
+        feet: [[lerp(90, 40, k), lerp(50, 4, k)], [lerp(84, 36, k), lerp(54, 8, k)]], toes: k < .5,
+        hands: [[lerp(6, 46, tk), lerp(64, 26, tk)], [lerp(0, 40, tk), lerp(66, 28, tk)]],
+        lid: peek ? .45 : 1, look: [.3, -1], mouth: u < 6.4 ? (r < .4 ? 'o' : 'grin') : peek ? 'flat' : 'smile' });
+      deckChair({ ...chair, part: 'front' }, 700);
+      if (r > 0 && r < .12) sparkle(M.hp(1.1, 0)[0], M.hp(1.1, 0)[1], 10, 1);
+      if (u > 6.2 && u < 6.6) sparkle(M.hp(1.1, 0)[0], M.hp(1.1, 0)[1], 14 * (1 - seg(u, 6.2, 6.6)), 1 - seg(u, 6.2, 6.6));
+    },
+  });
+}
+
+// ---------- the exposure sheet ----------
+const SHOTS = [
+  { dur: 5.5, draw: shotTitle, caps: [] },
+  { dur: 10, draw: shotEstablish, caps: [[1.2, 4.2, 'Agosto.']] },
+  { dur: 9, draw: shotSigh, caps: [] },
+  { dur: 7.5, draw: shotRay, caps: [] },
+  { dur: 5, draw: shotTake, caps: [] },
+  { dur: 5.5, draw: shotDash, caps: [] },
+  { dur: 9.5, draw: shotArrive, caps: [] },
+  { dur: 5, draw: shotGull, caps: [] },
+  { dur: 14.6, draw: shotEnd, caps: [[10.4, 14, 'Foi o verão.']] },
+];
+// Reading time: every caption stays up long enough to read (about 120 words a minute, for a
+// film in Portuguese). The action is never slowed; where it is shorter than the reading
+// time, the shot holds its last pose for the time still needed.
+const READ = text => 2 + text.split(/\s+/).length / 2, STRETCH = 1;
+for (const S of SHOTS) {
+  const knots = [[0, 0]]; let real = 0, story = 0;
+  S.realCaps = [];
+  for (const [a, b, text] of S.caps) {
+    real += a - story; story = a; knots.push([story, real]);
+    const ra = real, avail = b - a, need = READ(text), k = Math.min(STRETCH, Math.max(1, need / avail));
+    real += avail * k; story = b; knots.push([story, real]);
+    if (need > avail * k) { real += need - avail * k; knots.push([story, real]); }
+    S.realCaps.push([ra, real, text]);
+  }
+  real += S.dur - story; knots.push([S.dur, real]);
+  S.knots = knots; S.real = real;
+}
+// Map time on the screen to time in the shot's own action.
+function storyTime(S, r) {
+  const k = S.knots;
+  for (let i = 1; i < k.length; i++) if (r <= k[i][1]) { const [s0, r0] = k[i - 1], [s1, r1] = k[i]; return r1 > r0 ? s0 + (s1 - s0) * (r - r0) / (r1 - r0) : s1; }
+  return S.dur;
+}
+const TOTAL = SHOTS.reduce((a, s) => a + s.real, 0);
+
+function wrap(text, max) {
+  const words = text.split(' '), lines = []; let line = '';
+  for (const w of words) { const t = line ? line + ' ' + w : w; if (ctx.measureText(t).width > max && line) { lines.push(line); line = w; } else line = t; }
+  if (line) lines.push(line);
+  return lines;
+}
+function caption(text, a) {
+  ctx.save(); ctx.globalAlpha = a;
+  const g = ctx.createLinearGradient(0, H - 200, 0, H); g.addColorStop(0, 'rgba(15,12,10,0)'); g.addColorStop(.5, 'rgba(15,12,10,.45)'); g.addColorStop(1, 'rgba(15,12,10,.7)');
+  ctx.fillStyle = g; ctx.fillRect(0, H - 200, W, 200);
+  ctx.font = 'italic 30px ' + SERIF; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  const lines = wrap(text, 1000); let y = H - 50 - (lines.length - 1) * 38;
+  ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 8; ctx.fillStyle = '#f5ecdb';
+  for (const l of lines) { ctx.fillText(l, W / 2, y); y += 38; }
+  ctx.restore();
+}
+const GRAIN = [0, 1, 2].map(k => {
+  const c = document.createElement('canvas'); c.width = 320; c.height = 180;
+  const g = c.getContext('2d'), im = g.createImageData(320, 180), r = R(55 + k);
+  for (let i = 0; i < im.data.length; i += 4) { const v = 205 + r() * 50; im.data[i] = v; im.data[i + 1] = v * .985; im.data[i + 2] = v * .96; im.data[i + 3] = 255; }
+  g.putImageData(im, 0, 0); return c;
+});
+
+function render(t) {
+  BOIL = Math.floor(t * 8);
+  NOW = t;
+  let acc = 0, i = 0;
+  while (i < SHOTS.length - 1 && t >= acc + SHOTS[i].real) { acc += SHOTS[i].real; i++; }
+  const S = SHOTS[i], r = t - acc, u = storyTime(S, r);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cvs.width, cvs.height);
+  ctx.setTransform(VIEW.k, 0, 0, VIEW.k, VIEW.ox, VIEW.oy);
+  ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
+  ctx.save(); S.draw(u); ctx.restore();
+  ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.globalAlpha = .35; ctx.drawImage(GRAIN[BOIL % 3], 0, 0, W, H); ctx.restore();
+  const v = ctx.createRadialGradient(W / 2, H / 2, H * .45, W / 2, H / 2, H * 1.05);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(20,24,28,.42)'); ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+  const fade = Math.max(0, 1 - r / .4, 1 - (S.real - r) / .4);
+  if (fade > 0 && i !== 5 && i !== 6) { ctx.fillStyle = `rgba(18,18,18,${fade})`; ctx.fillRect(0, 0, W, H); }
+  if (i === 0 && r < .4) { ctx.fillStyle = `rgba(18,18,18,${1 - r / .4})`; ctx.fillRect(0, 0, W, H); }
+  for (const [a, b, text] of S.realCaps) {
+    if (r > a && r < b) caption(text, Math.min(1, (r - a) / .35, (b - r) / .35));
+  }
+  ctx.restore();
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2), cw = innerWidth, ch = innerHeight;
+  cvs.width = Math.round(cw * dpr); cvs.height = Math.round(ch * dpr);
+  cvs.style.width = cw + 'px'; cvs.style.height = ch + 'px';
+  const k = Math.min(cw / W, ch / H) * dpr;
+  VIEW = { k, ox: (cvs.width - W * k) / 2, oy: (cvs.height - H * k) / 2 };
+}
+const FIX = new URLSearchParams(location.search).get('t');
+if (new URLSearchParams(location.search).has('debug')) { let a = 0; console.log('TOTAL ' + TOTAL.toFixed(1) + ' starts ' + SHOTS.map(S => { const x = a; a += S.real; return x.toFixed(1); }).join(',')); }
+let clock = 0, last = null, paused = false;
+let ended = false;
+function frame(now) {
+  if (last !== null && !paused && !ended) clock += Math.min(.1, (now - last) / 1000);
+  last = now;
+  if (clock >= TOTAL - .001) { clock = TOTAL - .001; ended = true; }
+  render(clock);
+  if (ended) endCard();
+  requestAnimationFrame(frame);
+}
+// The film plays once and stops on its last (faded) frame with an offer to watch again.
+function endCard() {
+  ctx.setTransform(VIEW.k, 0, 0, VIEW.k, VIEW.ox, VIEW.oy);
+  ctx.save(); ctx.font = 'italic 34px ' + SERIF; ctx.textAlign = 'center'; ctx.fillStyle = '#f5ecdb';
+  ctx.fillText('↻  Ver outra vez', W / 2, H / 2 + 12); ctx.restore();
+}
+function toggle() { if (ended) { clock = 0; ended = false; paused = false; } else paused = !paused; }
+addEventListener('resize', () => { resize(); if (FIX !== null) render(parseFloat(FIX)); });
+addEventListener('click', toggle);
+addEventListener('keydown', e => { if (e.key === ' ') { toggle(); e.preventDefault(); } });
+resize();
+// A held frame is redrawn for its first second, in case the page is still being sized.
+let held = 0;
+function hold() { resize(); render(parseFloat(FIX)); if (++held < 60) requestAnimationFrame(hold); }
+if (FIX !== null) hold(); else requestAnimationFrame(frame);
+</script>
+</body>
+</html>

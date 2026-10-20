@@ -134,6 +134,19 @@
     "notes": "About four and three-quarter minutes, in seventeen shots and five vignettes (1962, 1975, 1988, 2004, 2026), drawn in code on a canvas with the same approach as the other films. It starts from a real experiment: from 1961 an airplane circled over Indiana broadcasting lessons to schools (the Midwest Program on Airborne Television Instruction). In this history the experiment never ended. One classroom, Room 4, is the recurring set: the same clock, closet and window, with a tree outside, planted in 1962, that grows through the decades. The lesson changes from a broadcast that cannot see the class, to a tape you can rewind, to a video that pauses for you, while the teacher moves from the front of the room to kneeling beside one child at a time. The two home scenes rhyme: in 1975 Linda misses the answer while her mother brings a snack (and turns the channel back with her toe), and in 2004 she brings her own son a snack and he presses pause. The costs are shown too: children who can explain photosynthesis but not spell it. It ends with the textbooks boxed up in 1962 being found again. The school, the teachers and the children are invented. Click the animation to pause it."
   },
   {
+    "slug": "o-raio-de-sol",
+    "title": "O Raio de Sol",
+    "direction": "Um habitante do litoral português sentado na esplanada sob céu nublado avista um único raio de sol minúsculo que rompe as nuvens; corre desenfreado, arrasta a cadeira de praia em frações de segundo e estende-se exatamente naquele círculo de calor antes que ele desapareça.",
+    "type": "html",
+    "aspect": "16 / 9",
+    "previewTime": 49,
+    "poster": "poster.png",
+    "model": "Claude Opus 5.5",
+    "date": "2026-10-20",
+    "prompt": "prompt.txt",
+    "notes": "About seventy seconds, in nine shots, drawn in code on a canvas with the same approach as the other films. Almost wordless: the only words are the title, two captions in Portuguese (“Agosto.” and “Foi o verão.”) and a pharmacy cross showing 16°. A grey northern seafront: an azulejo-tiled café with wave-pattern pavement, rows of empty striped beach tents, a low ceiling of cloud. The run itself is too fast to draw, so it is a smear and a cloud of dust; his flat cap hangs in the air for a moment before it falls, and back at the café a gull eats his pastel de nata. In the light he finds his head is still in the shade and shuffles the chair over twice; when the circle shrinks he folds himself up to stay in it, and when it closes he stays anyway. The café and the town are invented. Click the animation to pause it."
+  },
+  {
     "slug": "das-grimmsche-gesetz",
     "title": "Das Grimmsche Gesetz",
     "direction": "Das Grimmsche Gesetz – im Deutschen fachsprachlich als Erste Lautverschiebung bekannt – markiert den Moment, in dem sich das Urgermanische im 1. Jahrtausend v. Chr. als eigenständige Sprachfamilie aus dem Indoeuropäischen herausbildete.",

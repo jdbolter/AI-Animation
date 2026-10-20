@@ -61,7 +61,8 @@ def open_in_terminal(request):
     claude = find_claude()
     if not claude:
         raise ValueError('Claude Code was not found. Start the server with CLAUDE_BIN set to its path.')
-    command = f'cd {shlex.quote(str(ROOT))} && {shlex.quote(claude)} {shlex.quote(request)}'
+    # Unset any API key from the shell profile so Claude Code uses the subscription login.
+    command = f'cd {shlex.quote(str(ROOT))} && env -u ANTHROPIC_API_KEY {shlex.quote(claude)} {shlex.quote(request)}'
     script = command.replace('\\', '\\\\').replace('"', '\\"')
     subprocess.run(['osascript', '-e', f'tell application "Terminal" to do script "{script}"',
                     '-e', 'tell application "Terminal" to activate'], check=True, capture_output=True)
