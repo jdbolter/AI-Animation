@@ -2,7 +2,7 @@
 
 A small gallery of hand-drawn style cartoons made by AI models, part of the Distant Writing projects.
 
-Every animation starts from the same long prompt, [`prompt.txt`](prompt.txt), which asks the model to work like a classical animation studio (key poses, in-betweens, multiplane depth, camera moves). The blanks at the end of the prompt are filled in with the subject of each cartoon. The animations are made ahead of time and uploaded, so visitors to the site only watch them: no API key or server is needed.
+Every animation starts from one of two long prompts. The original, [`prompt.txt`](prompt.txt), asks the model to work like a classical animation studio (key poses, in-betweens, multiplane depth, camera moves). The blanks at the end of the prompt are filled in with the subject of each cartoon. The alternative, [`prompt-scion.txt`](prompt-scion.txt), runs the work as a production with independent critics. The site's "The prompts" page shows both, and each film's page says which was used. The animations are made ahead of time and uploaded, so visitors to the site only watch them: no API key or server is needed.
 
 The site is served with GitHub Pages at https://jdbolter.github.io/AI-Animation/.
 
@@ -15,7 +15,8 @@ The site is served with GitHub Pages at https://jdbolter.github.io/AI-Animation/
    ```
 
    This makes `animations/frog-buys-groceries/prompt.txt`. The folder name is the name you give, lowercased, with hyphens for spaces and other characters dropped. It also appears in the page's web address.
-2. Open that `prompt.txt` and fill in the blanks at the end: the subject (required), and references, length, aspect ratio and visual style (or write "infer").
+   To start from the alternative prompt, [`prompt-scion.txt`](prompt-scion.txt), add `--scion`: `./new-animation.sh --scion "Frog Buys Groceries"`. It runs the work as a production, with a creative thesis, quality references, independent critics and a stopping rule, and it uses more resources. The copy in the folder is still called `prompt.txt`.
+2. Open that `prompt.txt` and fill in the blanks at the end: the subject (required), and references, length, aspect ratio and visual style (or write "infer"). In a Scion prompt the blanks are the bracketed words in one sentence near the top: `[WORK]`, `[DIRECTION AND REFERENCES]`, `[FORMAT, DURATION, ASPECT RATIO]` and `[AVAILABLE RESOURCES]`.
 3. Ask Claude Code, in this repo: "make the animation in frog-buys-groceries". It follows the steps in [`CLAUDE.md`](CLAUDE.md): it writes the animation as `index.html` in that folder, checks it frame by frame, and adds it to `animations.json` so it appears in the gallery.
 
 ## Adding an animation by hand
@@ -43,7 +44,7 @@ If an animation was made elsewhere:
    }
    ```
 
-   `slug` must match the folder name. For a video, use `"type": "video"` and `"file": "frog.mp4"`. A second entry can share a folder with `"dir"` (the folder name) and `"file"`, as the read-aloud Sunday Bus does with `narrated.html`. `poster`, `model`, `date`, `prompt`, `notes`, `aspect` and `previewTime` are optional. Without a poster, the gallery card plays the animation itself; for an HTML animation that supports `?t=` (holding one frame), `previewTime` shows a still from that second instead. The gallery has two sections, Fiction and Essays/Technical documents: add `"section": "essay"` for the second; entries without it are fiction. Cards appear in the order of `animations.json` within each section.
+   `slug` must match the folder name. For a video, use `"type": "video"` and `"file": "frog.mp4"`. A second entry can share a folder with `"dir"` (the folder name) and `"file"`, as the read-aloud Sunday Bus does with `narrated.html`. `poster`, `model`, `date`, `prompt`, `notes`, `aspect`, `previewTime` and `template` are optional; `"template": "scion"` marks an animation made from `prompt-scion.txt` (without it the site shows the classic prompt). Without a poster, the gallery card plays the animation itself; for an HTML animation that supports `?t=` (holding one frame), `previewTime` shows a still from that second instead. The gallery has two sections, Fiction and Essays/Technical documents: add `"section": "essay"` for the second; entries without it are fiction. Cards appear in the order of `animations.json` within each section.
 
 ## Previewing locally
 
@@ -63,7 +64,7 @@ For the owner, on this computer only: a page for starting new animations and for
 python3 tools/author_server.py
 ```
 
-and open http://localhost:8001/tools/author.html. It serves the whole site too, so it can be used instead of `python3 -m http.server`. The Make and Revise buttons open Claude Code in a Terminal window with the request already sent; it asks for permission there as usual. Deleted animations go to the Trash, and their entries are removed from `animations.json`. On GitHub Pages the page does nothing, because there is no server there.
+and open http://localhost:8001/tools/author.html. Its form can start from either prompt; for Scion it fills the bracketed sentence from the same fields, plus a Resources box. It serves the whole site too, so it can be used instead of `python3 -m http.server`. The Make and Revise buttons open Claude Code in a Terminal window with the request already sent; it asks for permission there as usual. Deleted animations go to the Trash, and their entries are removed from `animations.json`. On GitHub Pages the page does nothing, because there is no server there.
 
 ## Publishing
 

@@ -1,12 +1,19 @@
 #!/bin/sh
-# Create a folder for a new animation and copy the prompt template into it.
-# Usage: ./new-animation.sh "Frog Buys Groceries"   ->  animations/frog-buys-groceries/prompt.txt
+# Create a folder for a new animation and copy a prompt template into it.
+# Usage: ./new-animation.sh "Frog Buys Groceries"           ->  animations/frog-buys-groceries/prompt.txt (from prompt.txt)
+#        ./new-animation.sh --scion "Frog Buys Groceries"   ->  the same, from prompt-scion.txt
 
 set -e
 cd "$(dirname "$0")"
 
+template=prompt.txt
+if [ "$1" = "--scion" ]; then
+  template=prompt-scion.txt
+  shift
+fi
+
 if [ -z "$1" ]; then
-  echo "Usage: ./new-animation.sh \"name of the animation\""
+  echo "Usage: ./new-animation.sh [--scion] \"name of the animation\""
   exit 1
 fi
 
@@ -25,8 +32,13 @@ if [ -e "$dir" ]; then
 fi
 
 mkdir -p "$dir"
-cp prompt.txt "$dir/prompt.txt"
+cp "$template" "$dir/prompt.txt"
 
-echo "Created $dir/prompt.txt"
-echo "Next: fill in the blanks at the end of that file (subject, style, length, aspect ratio),"
+echo "Created $dir/prompt.txt (from $template)"
+if [ "$template" = prompt-scion.txt ]; then
+  echo "Next: fill in the bracketed blanks near the top of that file ([WORK], [DIRECTION AND REFERENCES],"
+  echo "[FORMAT, DURATION, ASPECT RATIO], [AVAILABLE RESOURCES]),"
+else
+  echo "Next: fill in the blanks at the end of that file (subject, style, length, aspect ratio),"
+fi
 echo "then ask Claude to \"make the animation in $slug\"."

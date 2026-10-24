@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>The Prompt · AI Animation</title>
+  <title>The Prompts · AI Animation</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,28 +12,59 @@
       <p class="site-title"><a href="./">AI Animation</a></p>
       <nav class="site-nav">
         <a href="./">Gallery</a>
-        <a href="about.html" aria-current="page">The prompt</a>
+        <a href="about.html" aria-current="page">The prompts</a>
       </nav>
     </div>
   </header>
 
   <main class="wrap">
     <p class="intro">
-      Every animation starts from this prompt. The blanks at the end
-      (<code>{{USER_DIRECTION}}</code> and the others) are filled in with the subject and
-      any notes on length, shape and style.
+      Every animation starts from one of two prompts. Each film’s page says which, and links to
+      the filled-in copy that was used.
     </p>
-    <pre id="prompt" class="prompt-text">Loading…</pre>
+    <nav class="prompt-tabs" aria-label="Prompts">
+      <a href="#classic">Classic studio</a>
+      <a href="#scion">Scion</a>
+    </nav>
+
+    <section class="prompt-section" id="classic">
+      <h2 class="section-title">Classic studio</h2>
+      <p class="intro">
+        A long craft manual that asks the model to work like a classical hand-drawn animation studio:
+        key poses, breakdowns, in-betweens, multiplane depth and camera moves. The blanks at the end
+        (<code>{{USER_DIRECTION}}</code> and the others) are filled in with the subject and any notes
+        on length, shape and style. <a href="prompt.txt">Plain text</a>
+      </p>
+      <pre class="prompt-text" data-src="prompt.txt">Loading…</pre>
+    </section>
+
+    <section class="prompt-section" id="scion">
+      <h2 class="section-title">Scion</h2>
+      <p class="intro">
+        A shorter prompt that runs the work as a production: a creative thesis, quality references,
+        an early test of the hardest passage, independent critics who did not build the work, and an
+        honest rule for stopping. The blanks are the bracketed words in one sentence near the top
+        (<code>[DIRECTION AND REFERENCES]</code> and the others). <a href="prompt-scion.txt">Plain text</a>
+      </p>
+      <pre class="prompt-text" data-src="prompt-scion.txt">Loading…</pre>
+    </section>
   </main>
 
   <script>
-    fetch('prompt.txt')
-      .then(function (res) {
-        if (!res.ok) throw new Error('Could not load prompt.txt');
-        return res.text();
-      })
-      .then(function (text) { document.getElementById('prompt').textContent = text; })
-      .catch(function (err) { document.getElementById('prompt').textContent = err.message; });
+    document.querySelectorAll('.prompt-text[data-src]').forEach(function (pre) {
+      var src = pre.getAttribute('data-src');
+      fetch(src)
+        .then(function (res) {
+          if (!res.ok) throw new Error('Could not load ' + src);
+          return res.text();
+        })
+        .then(function (text) {
+          pre.textContent = text;
+          // the page was opened at #scion: scroll there once the text above it has arrived
+          if (location.hash) { var t = document.querySelector(location.hash); if (t) t.scrollIntoView(); }
+        })
+        .catch(function (err) { pre.textContent = err.message; });
+    });
   </script>
 </body>
 </html>

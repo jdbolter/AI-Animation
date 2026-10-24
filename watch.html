@@ -12,7 +12,7 @@
       <p class="site-title"><a href="./">AI Animation</a></p>
       <nav class="site-nav">
         <a href="./">Gallery</a>
-        <a href="about.html">The prompt</a>
+        <a href="about.html">The prompts</a>
       </nav>
     </div>
   </header>
@@ -67,14 +67,19 @@
           details.appendChild(el('p', 'label', 'Notes'));
           details.appendChild(el('p', null, a.notes));
         }
+        var pr = promptOf(a);
+        details.appendChild(el('p', 'label', 'Prompt'));
+        var p = el('p');
+        var about = el('a', null, pr.name);
+        about.href = 'about.html#' + pr.anchor;
+        p.appendChild(about);
         if (a.prompt) {
-          var link = el('a', null, 'Read the full prompt used for this animation');
+          p.appendChild(document.createTextNode(' · '));
+          var link = el('a', null, 'the filled-in copy used for this animation');
           link.href = animationDir(a) + a.prompt;
-          var p = el('p');
-          p.style.marginTop = '24px';
           p.appendChild(link);
-          details.appendChild(p);
         }
+        details.appendChild(p);
         main.appendChild(details);
       }).catch(function (err) {
         main.appendChild(el('p', 'error', err.message));

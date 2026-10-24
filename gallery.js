@@ -10,6 +10,16 @@ function animationFile(a) {
   return animationDir(a) + (a.file || 'index.html');
 }
 
+// The two prompt templates; an entry names its own in "template" (classic when absent).
+var PROMPTS = {
+  classic: { name: 'Classic studio prompt', anchor: 'classic' },
+  scion: { name: 'Scion prompt', anchor: 'scion' }
+};
+
+function promptOf(a) {
+  return PROMPTS[a.template] || PROMPTS.classic;
+}
+
 function metaLine(a) {
   return [a.model, a.date].filter(Boolean).join(' · ');
 }
@@ -68,6 +78,7 @@ function renderCard(a) {
   if (a.direction) body.appendChild(el('p', 'card-direction', '“' + a.direction + '”'));
   var meta = metaLine(a);
   if (meta) body.appendChild(el('div', 'meta', meta));
+  body.appendChild(el('div', 'meta meta-prompt', promptOf(a).name));
   card.appendChild(body);
   return card;
 }

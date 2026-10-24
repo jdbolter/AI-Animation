@@ -1,0 +1,1106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Stumble-Stop</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    canvas { display: block; cursor: pointer; }
+    #sound { position: fixed; top: 12px; right: 12px; font: 13px -apple-system, Helvetica, Arial, sans-serif; color: #f2efe8; background: rgba(20,22,26,.55); border: 1px solid rgba(242,239,232,.35); border-radius: 14px; padding: 4px 11px; cursor: pointer; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<button id="sound" type="button" aria-pressed="true" title="Mute (M)" hidden>🔊 Sound on</button>
+<script>
+// The Stumble-Stop: the jogger's epiphany, played straight. A detective's morning run along the
+// waterline, one wave, and the reason a witness saw no footprints.
+// Drawn in canvas as a multiplane cartoon (characters on twos, boiling ink lines); the sound is
+// synthesized in the page with Web Audio, so it starts after a click.
+// Add ?t=SECONDS to the URL to hold a single frame (silent). Click to pause; it plays once, then click to watch again.
+
+const W = 1280, H = 720;
+const cvs = document.getElementById('c');
+let ctx = cvs.getContext('2d');
+let VIEW = { k: 1, ox: 0, oy: 0 };
+let NOW = 0;
+
+const INK = '#23262a';
+const SERIF = '"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif';
+
+// ---------- math ----------
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, f) => a + (b - a) * f;
+const ease = f => { f = clamp(f); return f * f * (3 - 2 * f); };
+const easeOut = f => { f = clamp(f); return 1 - (1 - f) ** 3; };
+const easeIn = f => { f = clamp(f); return f * f * f; };
+const seg = (u, a, b) => clamp((u - a) / (b - a));
+const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+const frac = x => x - Math.floor(x);
+function mix(a, b, f) { return Array.isArray(a) ? a.map((x, i) => x + (b[i] - x) * f) : a + (b - a) * f; }
+function K(u, keys, e = ease) {
+  if (u <= keys[0][0]) return keys[0][1];
+  for (let i = 1; i < keys.length; i++) {
+    if (u < keys[i][0]) { const [a, va] = keys[i - 1], [b, vb] = keys[i]; return mix(va, vb, e((u - a) / (b - a))); }
+  }
+  return keys[keys.length - 1][1];
+}
+function R(seed) {
+  let a = seed >>> 0;
+  return () => { a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+function rgb(h) { const n = parseInt(h.slice(1), 16); return [n >> 16, n >> 8 & 255, n & 255]; }
+function shade(h, a) {
+  let [r, g, b] = rgb(h); const t = a < 0 ? 0 : 255, p = Math.abs(a);
+  return `rgb(${Math.round(r + (t - r) * p)},${Math.round(g + (t - g) * p)},${Math.round(b + (t - b) * p)})`;
+}
+function mixC(a, b, f) { const x = rgb(a), y = rgb(b); return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * clamp(f)).toString(16).padStart(2, '0')).join(''); }
+
+// ---------- ink ----------
+let BOIL = 0;
+function jitterPts(pts, amt, r) { return pts.map(p => [p[0] + (r() - .5) * 2 * amt, p[1] + (r() - .5) * 2 * amt]); }
+function tracePath(p, close, sharp) {
+  ctx.beginPath();
+  if (sharp || p.length < 3) { ctx.moveTo(p[0][0], p[0][1]); for (let i = 1; i < p.length; i++) ctx.lineTo(p[i][0], p[i][1]); if (close) ctx.closePath(); return; }
+  if (close) {
+    const n = p.length, m = mid(p[n - 1], p[0]); ctx.moveTo(m[0], m[1]);
+    for (let i = 0; i < n; i++) { const q = p[i], m2 = mid(q, p[(i + 1) % n]); ctx.quadraticCurveTo(q[0], q[1], m2[0], m2[1]); }
+    ctx.closePath();
+  } else {
+    ctx.moveTo(p[0][0], p[0][1]);
+    for (let i = 1; i < p.length - 1; i++) { const m = mid(p[i], p[i + 1]); ctx.quadraticCurveTo(p[i][0], p[i][1], m[0], m[1]); }
+    const l = p[p.length - 1]; ctx.lineTo(l[0], l[1]);
+  }
+}
+function ink(pts, o = {}) {
+  const id = o.id || 1, j = o.j ?? 1.1, seed = o.still ? id * 7919 : id * 7919 + BOIL * 104729;
+  const close = o.close ?? !!o.fill;
+  if (o.fill) { tracePath(jitterPts(pts, j * .8, R(seed + 17)), true, o.sharp); ctx.fillStyle = o.fill; ctx.fill(); }
+  if (o.stroke !== false) { tracePath(jitterPts(pts, j, R(seed)), close, o.sharp); ctx.strokeStyle = o.stroke || INK; ctx.lineWidth = o.w || 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.stroke(); }
+}
+function ellPts(c, rx, ry, n = 12) { const p = []; for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; p.push([c[0] + Math.cos(a) * rx, c[1] + Math.sin(a) * ry]); } return p; }
+function limb(pts, w, col, id) { ink(pts, { w: w + 3.2, stroke: INK, id }); ink(pts, { w, stroke: col, id }); }
+function blob(x, y, rx, ry, col, rot = 0) { ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(x, y, Math.max(.1, rx), Math.max(.1, ry), rot, 0, 7); ctx.fill(); }
+function ik(S, T, a, b, pick) {
+  const dx = T[0] - S[0], dy = T[1] - S[1];
+  const dd = clamp(Math.hypot(dx, dy), Math.abs(a - b) + 1, a + b - .5);
+  const ang = Math.atan2(dy, dx), A = Math.acos(clamp((a * a + dd * dd - b * b) / (2 * a * dd), -1, 1));
+  const e1 = [S[0] + Math.cos(ang + A) * a, S[1] + Math.sin(ang + A) * a], e2 = [S[0] + Math.cos(ang - A) * a, S[1] + Math.sin(ang - A) * a];
+  const E = pick(e1) >= pick(e2) ? e1 : e2, ha = Math.atan2(T[1] - E[1], T[0] - E[0]);
+  return [E, [E[0] + Math.cos(ha) * b, E[1] + Math.sin(ha) * b]];
+}
+function strand(c, w0, w1) {
+  const L = [], Rr = [];
+  for (let i = 0; i < c.length; i++) {
+    const a = c[Math.max(0, i - 1)], b = c[Math.min(c.length - 1, i + 1)];
+    let nx = -(b[1] - a[1]), ny = b[0] - a[0]; const l = Math.hypot(nx, ny) || 1; nx /= l; ny /= l;
+    const w = lerp(w0, w1, i / (c.length - 1)) / 2;
+    L.push([c[i][0] + nx * w, c[i][1] + ny * w]); Rr.push([c[i][0] - nx * w, c[i][1] - ny * w]);
+  }
+  return L.concat(Rr.reverse());
+}
+// A smooth path through key points (Catmull-Rom), sampled at f in 0..1 by equal segments.
+function spline(pts, f) {
+  const n = pts.length - 1, s = clamp(f) * n, i = Math.min(n - 1, Math.floor(s)), t = s - i;
+  const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(n, i + 2)];
+  return [0, 1].map(k => .5 * (2 * p1[k] + (-p0[k] + p2[k]) * t + (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * t * t + (-p0[k] + 3 * p1[k] - 3 * p2[k] + p3[k]) * t * t * t));
+}
+
+// ---------- multiplane camera ----------
+let CAM = { x: W / 2, y: H / 2, z: 1 };
+function layer(p, fn) {
+  ctx.save();
+  const z = 1 + (CAM.z - 1) * p;
+  ctx.translate(W / 2, H / 2); ctx.scale(z, z);
+  ctx.translate(-(W / 2 + (CAM.x - W / 2) * p), -(H / 2 + (CAM.y - H / 2) * p));
+  fn();
+  ctx.restore();
+}
+
+// ---------- the shore ----------
+// The runner goes along the waterline, left to right. The sea is behind her; the swash comes
+// up the sand toward us, across the line her feet print.
+const GY = 560;              // where her feet land
+const SHORE = 512;           // the still waterline, behind her
+const HZ = 300;
+
+// The waves. Each has a time when its swash stands highest (at x = w.at), how far up the sand it
+// comes, how fast it travels along the beach (sweep, seconds per pixel; negative runs leftward),
+// how long it takes to run up and to drain, and, optionally, the stretch of beach it covers (x0..x1).
+const WAVES = (() => {
+  const r = R(404), a = [];
+  for (let t = -30; t < 140;) { a.push({ t, at: 0, reach: 528 + r() * 22, sweep: .0006, rush: 1.3, back: 2.6 }); t += 5.4 + r() * 2.6; }
+  return a;
+})();
+function addWave(w) { WAVES.push({ at: 0, sweep: .0006, rush: 1.3, back: 2.6, ...w }); WAVES.sort((a, b) => a.t - b.t); }
+function waveReach(w, x) {
+  if (w.x0 == null) return w.reach;
+  const k = ease(seg(x, w.x0 - (w.taper || 140), w.x0)) * (1 - ease(seg(x, w.x1, w.x1 + (w.taper || 140))));
+  return SHORE + 14 + (w.reach - SHORE - 14) * k;
+}
+// Swash shape for one wave, at its local time tau (0 = highest): 0..1.
+function swash(tau, w) { return tau < -w.rush || tau > w.back ? 0 : tau < 0 ? easeOut(1 + tau / w.rush) : 1 - ease(tau / w.back); }
+function swashEdge(x, t) {
+  let y = SHORE;
+  for (const w of WAVES) {
+    const tau = t - w.t - (x - w.at) * w.sweep;
+    if (tau > -w.rush - .1 && tau < w.back + .1) y = Math.max(y, SHORE + (waveReach(w, x) - SHORE) * swash(tau, w));
+  }
+  return y;
+}
+// Has any swash reached line y at x between times t0 and t1?
+function washed(x, y, t0, t1) {
+  for (const w of WAVES) {
+    const reach = waveReach(w, x);
+    if (reach < y) continue;
+    const lvl = (y - SHORE) / (reach - SHORE), base = w.t + (x - w.at) * w.sweep;
+    // the swash stands above lvl for tau in [a, b]
+    const a = -w.rush * Math.cbrt(1 - lvl), b = w.back * (1 - lvl) ** .5 * .9;
+    if (base + b > t0 && base + a < t1) return true;
+  }
+  return false;
+}
+
+function skyMist() {
+  const g = ctx.createLinearGradient(0, -400, 0, HZ + 40);
+  g.addColorStop(0, '#9fa9b0'); g.addColorStop(.6, '#c4cacb'); g.addColorStop(1, '#dcdfdc');
+  ctx.fillStyle = g; ctx.fillRect(-6000, -2000, 30000, 2400);
+  // a pale low sun behind the mist
+  const s = ctx.createRadialGradient(900, 170, 0, 900, 170, 260);
+  s.addColorStop(0, 'rgba(255,246,226,.75)'); s.addColorStop(.12, 'rgba(255,240,215,.45)'); s.addColorStop(1, 'rgba(255,240,215,0)');
+  ctx.fillStyle = s; ctx.fillRect(500, -200, 800, 700);
+}
+// Far headland and, at the end of the beach, the boathouse.
+function farLand() {
+  ctx.fillStyle = '#aeb6b7';
+  ctx.beginPath(); ctx.moveTo(-3000, HZ + 2); ctx.lineTo(-1400, HZ - 26); ctx.lineTo(-700, HZ - 38); ctx.lineTo(100, HZ - 14); ctx.lineTo(400, HZ + 2); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(2600, HZ + 2); ctx.lineTo(3100, HZ - 30); ctx.lineTo(3800, HZ - 44); ctx.lineTo(4600, HZ - 20); ctx.lineTo(5600, HZ + 2); ctx.fill();
+}
+function boathouse(x) {
+  const y = HZ + 22;
+  ctx.fillStyle = '#9aa2a3';
+  ctx.fillRect(x - 260, y - 2, 420, 8);
+  ctx.beginPath(); ctx.moveTo(x - 46, y); ctx.lineTo(x - 46, y - 34); ctx.lineTo(x, y - 58); ctx.lineTo(x + 46, y - 34); ctx.lineTo(x + 46, y); ctx.fill();
+  ctx.fillStyle = '#8b9394'; ctx.fillRect(x - 16, y - 26, 32, 26);
+  for (let k = 0; k < 6; k++) ctx.fillRect(x + 60 + k * 18, y - 4, 3, 10);
+}
+function sea() {
+  ctx.fillStyle = '#9fadae'; ctx.fillRect(-6000, HZ, 30000, 400);
+  const g = ctx.createLinearGradient(0, HZ, 0, HZ + 200);
+  g.addColorStop(0, 'rgba(210,216,214,.9)'); g.addColorStop(1, 'rgba(120,138,140,.0)');
+  ctx.fillStyle = g; ctx.fillRect(-6000, HZ, 30000, 200);
+  const r = R(91); ctx.strokeStyle = '#e8ecea'; ctx.lineCap = 'round';
+  for (let i = 0; i < 700; i++) {
+    const y = HZ + 6 + r() ** 1.5 * 170, x = -4000 + r() * 24000, w = 8 + 40 * (y - HZ) / 170, ph = r() * 7;
+    ctx.globalAlpha = clamp(.1 + .4 * Math.sin(NOW * .9 + ph)); ctx.lineWidth = 1 + (y - HZ) / 80;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + w, y); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+// Breakers rolling in, on a plane nearer than the open sea.
+function breakers() {
+  for (let k = 0; k < 3; k++) {
+    const ph = frac(NOW / 6.3 + k / 3), y = 440 + ph * 60, a = Math.sin(ph * Math.PI) ** 1.5;
+    ctx.strokeStyle = `rgba(240,243,240,${.7 * a})`; ctx.lineWidth = 2 + ph * 5;
+    ctx.beginPath();
+    for (let x = -4000; x < 20000; x += 50) ctx.lineTo(x, y + Math.sin(x * .007 + k * 2.3) * 4);
+    ctx.stroke();
+  }
+}
+// Groyne posts: old breakwater timbers marching down the beach, the beat of the run.
+function groynes(x0, x1) {
+  for (let g = Math.floor(x0 / 900) * 900; g < x1; g += 900) {
+    for (let k = 0; k < 7; k++) {
+      const x = g + k * 26, y = SHORE + 8 + k * 7, h = 40 - k * 2.5;
+      ink([[x - 6, y], [x - 6, y - h], [x + 6, y - h - 2], [x + 6, y]], { fill: '#6a5e50', w: 1.5, id: 30 + k + g, still: true, sharp: true });
+    }
+  }
+}
+// The sand: wet near the water (and reflective), dry toward us. The swash is drawn on top.
+function sand(x0, x1, t) {
+  const g = ctx.createLinearGradient(0, SHORE - 10, 0, 760);
+  g.addColorStop(0, '#8d8f88'); g.addColorStop(.16, '#a19d90'); g.addColorStop(.3, '#bdb4a2'); g.addColorStop(1, '#cfc5b0');
+  ctx.fillStyle = g; ctx.fillRect(x0, SHORE - 10, x1 - x0, 1200);
+  const r = R(7); ctx.fillStyle = 'rgba(110,100,85,.16)';
+  for (let x = Math.floor(x0 / 400) * 400; x < x1; x += 400) { const rr = R(x * 13 + 5); for (let i = 0; i < 30; i++) ctx.fillRect(x + rr() * 400, 585 + rr() * 300, 2 + rr() * 5, 1.5); }
+  for (let x = Math.floor(x0 / 700) * 700; x < x1; x += 700) { const rr = R(x * 7 + 3); for (let i = 0; i < 3; i++) { const sx = x + rr() * 700, sy = 600 + rr() * 140; ink([[sx, sy], [sx + 10, sy - 3], [sx + 22, sy + 1]], { w: 1.3, stroke: 'rgba(80,70,55,.4)', id: 50 + i + x, still: true }); } }
+}
+function swashLayer(x0, x1, t) {
+  const pts = [];
+  for (let x = x0 - 40; x <= x1 + 40; x += 24) pts.push([x, swashEdge(x, t) + Math.sin(x * .05 + t * 3) * 1.5]);
+  // the sheet of water
+  const wg = ctx.createLinearGradient(0, SHORE - 12, 0, GY + 30);
+  wg.addColorStop(0, 'rgba(104,128,136,.82)'); wg.addColorStop(1, 'rgba(126,150,156,.7)');
+  ctx.fillStyle = wg;
+  ctx.beginPath(); ctx.moveTo(x0 - 40, SHORE - 12); for (const p of pts) ctx.lineTo(p[0], p[1]); ctx.lineTo(x1 + 40, SHORE - 12); ctx.fill();
+  // lace of foam behind the edge
+  ctx.fillStyle = 'rgba(240,244,242,.6)';
+  for (const p of pts) if (p[1] > SHORE + 6) { const r = R(Math.floor(p[0]) * 7 + Math.floor(t * 6)); for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.ellipse(p[0] + (r() - .5) * 24, p[1] - 3 - r() * 12, 2 + r() * 4, 1 + r() * 1.5, 0, 0, 7); ctx.fill(); } }
+  // foam at its edge
+  ctx.strokeStyle = 'rgba(246,248,245,.95)'; ctx.lineWidth = 4;
+  ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.stroke();
+  ctx.strokeStyle = 'rgba(246,248,245,.45)'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1] - 6) : ctx.moveTo(p[0], p[1] - 6)); ctx.stroke();
+  // the glassy sheen the backwash leaves
+  ctx.fillStyle = 'rgba(220,228,228,.18)'; ctx.fillRect(x0, SHORE - 4, x1 - x0, 20);
+}
+function mist(a = 1) {
+  const g = ctx.createLinearGradient(0, HZ - 120, 0, HZ + 160);
+  g.addColorStop(0, 'rgba(225,229,228,0)'); g.addColorStop(.45, `rgba(225,229,228,${.55 * a})`); g.addColorStop(1, 'rgba(225,229,228,0)');
+  ctx.fillStyle = g; ctx.fillRect(-6000, HZ - 120, 30000, 280);
+}
+// Marram grass and a sagging rope fence, close to the lens: they cross the frame fastest.
+function foreground(x0, x1) {
+  for (let x = Math.floor(x0 / 520) * 520; x < x1; x += 520) {
+    const rr = R(x * 3 + 1), px = x + rr() * 200;
+    ink([[px - 7, 790], [px - 6, 660], [px + 6, 656], [px + 7, 790]], { fill: '#5d5244', w: 1.8, id: 70 + x, still: true, sharp: true });
+    for (let k = 0; k < 9; k++) {
+      const bx = x + 220 + rr() * 260, h = 60 + rr() * 90, lean = (rr() - .5) * 40 + Math.sin(NOW * 1.6 + k) * 4;
+      ink([[bx, 760], [bx + lean * .4, 760 - h * .6], [bx + lean, 760 - h]], { w: 3, stroke: '#7d7a5c', id: 80 + k + x });
+    }
+  }
+  ctx.strokeStyle = '#4e463c'; ctx.lineWidth = 2.5; ctx.beginPath();
+  for (let x = Math.floor(x0 / 520) * 520; x < x1 + 520; x += 520) { const rr = R(x * 3 + 1), px = x + rr() * 200; ctx.lineTo(px, 676); }
+  ctx.stroke();
+}
+
+// ---------- footprints ----------
+// Each planted foot leaves a print where it stood; a print vanishes when a swash crosses it later.
+let PRINTS = [];
+function printsLayer(t) {
+  for (const p of PRINTS) {
+    if (p.t > t) continue;
+    if (washed(p.x, p.y, p.t + .05, t)) continue;
+    const age = t - p.t, sk = p.skid ? 1 : 0;
+    ctx.save(); ctx.translate(p.x, p.y);
+    if (sk) { blob(0, 0, 30, 6, 'rgba(48,42,36,.6)'); blob(p.d * 22, -2, 12, 3.5, 'rgba(240,236,226,.55)'); }
+    else {
+      blob(p.d * 7, 0, 11, 4.6, 'rgba(46,40,34,.72)');       // ball of the foot
+      blob(-p.d * 9, .4, 6.5, 3.8, 'rgba(46,40,34,.66)');    // heel
+      blob(p.d * 7, -.8, 5, 1.4, 'rgba(200,214,216,.55)');   // water standing in the print
+      blob(p.d * 8, -3.4, 8, 1.4, 'rgba(244,240,230,.5)');   // the lip of sand pushed up
+    }
+    if (age < .2) blob(0, 0, 13, 5, `rgba(255,255,255,${.3 * (1 - age / .2)})`);
+    ctx.restore();
+  }
+}
+
+// ---------- the detective ----------
+const DET = { r: 19, neck: 7, torso: 64, ua: 33, fa: 31, th: 50, sh: 48, chest: 15, back: 12, arm: 8.5, leg: 10.5, foot: 14 };
+const DC = { skin: '#e9b893', jacket: '#b3413a', legs: '#2b2c35', shoes: '#ecebe4', sole: '#9a9a96', hair: '#3a2a20' };
+
+function detHead(C, r, ang, d, o, id) {
+  const ca = Math.cos(ang), sa = Math.sin(ang);
+  const hp = (hx, hy) => { const x = d * hx * r, y = hy * r; return [C[0] + x * ca - y * sa, C[1] + x * sa + y * ca]; };
+  const E = (cx, cy, rx, ry, n = 12) => ellPts([0, 0], 1, 1, n).map(([a, b]) => hp(cx + a * rx, cy + b * ry));
+  // ponytail, behind everything; its angle lags the head (o.tail is a lag angle in radians)
+  const tl = o.tail || 0, base = hp(-.78, -.5);
+  const t1 = [base[0] - d * Math.cos(tl) * r * .9, base[1] + Math.sin(tl) * r * .9];
+  const t2 = [t1[0] - d * Math.cos(tl * 1.4 + .15) * r * .9, t1[1] + Math.sin(tl * 1.4 + .15) * r * .9];
+  ink(strand([base, t1, t2], .5 * r, .16 * r), { fill: shade(DC.hair, .05), w: 1.6, id: id + 1 });
+  ink(E(0, 0, 1, 1.06, 16), { fill: DC.skin, w: 2, id: id + 2 });
+  // hair cap, pulled back
+  const pts = [];
+  for (let i = 0; i <= 14; i++) { const a = lerp(-20, -205, i / 14) * Math.PI / 180; pts.push(hp(Math.cos(a) * 1.07, Math.sin(a) * 1.09)); }
+  pts.push(hp(-.7, .25), hp(-.35, -.1), hp(.1, -.55), hp(.55, -.62));
+  ink(pts, { fill: DC.hair, w: 1.7, id: id + 3 });
+  ink(E(-.78, -.5, .2, .18, 8), { fill: '#3a3f6a', w: 1.2, id: id + 4 });  // hair tie
+  ink(E(-.1, .14, .16, .25, 8), { fill: DC.skin, w: 1.4, id: id + 5 });
+  // nose
+  ink([hp(.9, -.2), hp(1.2, .22), hp(.92, .32)], { fill: DC.skin, w: 1.6, id: id + 6 });
+  const lk = o.look || [0, 0], wide = o.wide || 0, ex = .5, ey = -.08;
+  if (o.blink) ink([hp(ex - .12, ey + .02), hp(ex + .12, ey + .03)], { w: 1.7, id: id + 7 });
+  else {
+    if (wide > .2) ink(E(ex, ey, .14 * (1 + wide * .3), .17 * (1 + wide * .3), 10), { fill: '#fbf9f4', w: 1.3, id: id + 8 });
+    const p = hp(ex + lk[0] * .06, ey + lk[1] * .07);
+    blob(p[0], p[1], .08 * r, .12 * r, '#1e1a18', ang);
+    blob(p[0] + .03 * r, p[1] - .045 * r, .03 * r, .03 * r, '#fff');
+    if (o.lid) { const t = ey - .2, b = t + o.lid * .32; ink([hp(ex - .17, t), hp(ex + .17, t - .02), hp(ex + .17, b), hp(ex - .17, b + .02)], { fill: DC.skin, stroke: false, id: id + 9, sharp: true }); ink([hp(ex - .16, b + .02), hp(ex + .16, b)], { w: 1.4, id: id + 10 }); }
+  }
+  const up = o.brow || 0;
+  ink([hp(.32, -.3 - up * .14), hp(.68, -.33 - up * .14 - (o.knit || 0) * -.06)], { w: 2.2, stroke: DC.hair, id: id + 11 });
+  const m = o.mouth || 'set', mx = .7, my = .55;
+  if (m === 'gasp') ink(E(mx + .02, my + .02, .1, .14 * (o.gaspOpen ?? 1), 8), { fill: '#5e2422', w: 1.4, id: id + 12 });
+  else if (m === 'open') ink(E(mx, my, .08, .07, 8), { fill: '#5e2422', w: 1.3, id: id + 12 });
+  else if (m === 'puff') ink(E(mx + .04, my, .05, .05, 6), { fill: '#5e2422', w: 1.2, id: id + 12 });
+  else ink([hp(mx - .12, my), hp(mx + .1, my + .01)], { w: 1.6, id: id + 12 });
+  ctx.save(); ctx.globalAlpha = .25 + (o.flush || 0) * .3; ctx.fillStyle = '#d9726a'; const ch = hp(.4, .3); ctx.beginPath(); ctx.ellipse(ch[0], ch[1], .2 * r, .13 * r, 0, 0, 7); ctx.fill(); ctx.restore();
+  return hp;
+}
+
+// The detective in profile (d = 1 faces right). x, y is the hip. Feet are absolute (feetAbs) or
+// relative to the hip; hands relative to the shoulders (mirrored by d) unless handsAbs.
+function det(o) {
+  const b = DET, s = o.s || 1, d = o.d || 1, id = o.id || 200;
+  const lean = o.lean || 0, tilt = o.tilt || 0, heave = o.heave || 0;
+  const Hx = o.x, Hy = o.y;
+  const U = [d * Math.sin(lean), -Math.cos(lean)], F = [d * Math.cos(lean), Math.sin(lean)];
+  const P = (v, h) => [Hx + (F[0] * v + U[0] * h) * s, Hy + (F[1] * v + U[1] * h) * s];
+  const S = P(-b.back * .1, b.torso * .86 + heave * 4), S2 = P(-b.back * .4, b.torso * .84 + heave * 4);
+  const loc = (O, q) => [O[0] + d * q[0] * s, O[1] + q[1] * s];
+  const hands = [0, 1].map(i => (o.handsAbs && o.handsAbs[i]) || loc(i ? S2 : S, (o.hands && o.hands[i]) || [i ? -4 : 6, b.ua + b.fa - 6]));
+  const feet = [0, 1].map(i => (o.feetAbs && o.feetAbs[i]) || loc([Hx, Hy], (o.feet && o.feet[i]) || [i ? -5 : 5, b.th + b.sh - 1]));
+  const armPick = e => -d * e[0] * (o.elbowsBack ?? 1) + e[1] * .2;
+  function arm(i) {
+    const Sh = i ? S2 : S, [E, Hn] = ik(Sh, hands[i], b.ua * s, b.fa * s, armPick);
+    const c = i ? shade(DC.jacket, -.22) : DC.jacket;
+    limb([Sh, E], b.arm * s, c, id + 20 + i);
+    limb([E, Hn], (b.arm - .8) * s, c, id + 22 + i);
+    ink(ellPts(Hn, 4.2 * s, 4 * s, 7), { fill: i ? shade(DC.skin, -.12) : DC.skin, w: 1.3, id: id + 24 + i });
+  }
+  function leg(i) {
+    const [Kn, Ft] = ik([Hx, Hy], feet[i], b.th * s, b.sh * s, e => d * e[0] - e[1] * .05);
+    const c = i ? shade(DC.legs, .1) : DC.legs;
+    limb([[Hx, Hy], Kn], b.leg * s, c, id + 30 + i);
+    limb([Kn, Ft], (b.leg - 1.2) * s, c, id + 32 + i);
+    // the shoe follows the shin's angle a little (toe down in the swing)
+    const sa = o.toeAng ? o.toeAng[i] : 0, ca = Math.cos(sa), sn = Math.sin(sa);
+    const sp = q => [Ft[0] + d * (q[0] * ca - q[1] * sn) * s, Ft[1] + (q[0] * sn + q[1] * ca) * s];
+    ink([sp([-6, -5]), sp([b.foot, -3]), sp([b.foot + 2, 2]), sp([-7, 3])], { fill: i ? shade(DC.shoes, -.12) : DC.shoes, w: 1.5, id: id + 34 + i });
+    ink([sp([-7, 3]), sp([b.foot + 2, 2])], { w: 2.2, stroke: DC.sole, id: id + 36 + i });
+    return Kn;
+  }
+  arm(1);
+  leg(1);
+  // torso: a running jacket
+  const tp = [[-b.back * .8, -3], [b.chest * .7, -3], [b.chest * .95, b.torso * .4], [b.chest * 1.05, b.torso * .7], [b.chest * .6, b.torso * .98 + heave * 4], [-b.back * .5, b.torso + heave * 4], [-b.back * 1.05, b.torso * .72], [-b.back * .95, b.torso * .3]];
+  ink(tp.map(q => P(...q)), { fill: DC.jacket, w: 2, id: id + 4 });
+  ink([P(b.chest * .5, b.torso * .95), P(b.chest * .9, b.torso * .4)], { w: 1.2, stroke: 'rgba(240,220,210,.6)', id: id + 5 });
+  ink([P(-b.back * .7, -2), P(b.chest * .6, -2)], { w: 3 * s, stroke: DC.legs, id: id + 6 });
+  leg(0);
+  const Nb = P(-b.back * .05, b.torso * .95 + heave * 3);
+  const hd = o.headD || d, ha = lean + tilt;
+  const U2 = [d * Math.sin(ha), -Math.cos(ha)];
+  const C = [Nb[0] + U2[0] * (b.neck + b.r * .9) * s, Nb[1] + U2[1] * (b.neck + b.r * .9) * s];
+  limb([Nb, mid(Nb, C)], 7.5 * s, DC.skin, id + 12);
+  const hp = detHead(C, b.r * s, d * (lean + tilt), hd, o, id + 50);
+  arm(0);
+  return { head: C, hp, S, hands };
+}
+
+// ---------- the run ----------
+// A step cycle for one leg, q in 0..1 over a full stride: on the ground for the first GROUND of
+// it (planted, not sliding), then a flight: back-kick, knee drive, reach, contact.
+const GROUND = .3;
+// Foot position relative to the hip during the swing, in body units (forward +, down +), for a
+// stride whose planted foot travels from +c to -p.
+function swingFoot(f, c, p, L) {
+  return spline([[-p, L], [-p - 16, L - 30], [-p * .45, L - 58], [c * .55, L - 46], [c + 10, L - 18], [c, L]], f);
+}
+// The runner's state at story time u for a piecewise plan of speeds.
+// plan: [{ t, v (px/s, signed), rate (steps/s) }] — speeds change smoothly between entries.
+function runPlan(plan, x0) {
+  // integrate x and step phase on a fine grid, so contact times and positions are exact enough
+  const dt = 1 / 240, T = plan[plan.length - 1].t + 20, xs = [x0], ph = [0], vs = [], rs = [];
+  const vAt = u => K(u, plan.map(p => [p.t, p.v]), f => f), rAt = u => K(u, plan.map(p => [p.t, p.rate]), f => f);
+  for (let i = 0; i * dt < T; i++) {
+    const u = i * dt, v = vAt(u), r = rAt(u);
+    vs.push(v); rs.push(r); xs.push(xs[i] + v * dt); ph.push(ph[i] + r * dt);
+  }
+  const at = (arr, u) => { const k = clamp(u / dt, 0, arr.length - 2), i = Math.floor(k); return lerp(arr[i], arr[i + 1], k - i); };
+  return { x: u => at(xs, u), phase: u => at(ph, u), v: u => at(vs, u), rate: u => at(rs, u), dt, xs, ph };
+}
+// The pose of a running figure at story time u: feet planted where they landed, a bob, arms
+// counter-swinging. Also returns contacts (for prints and footfall sounds).
+function runPose(plan, u, d, o = {}) {
+  const x = plan.x(u), v = Math.abs(plan.v(u)), rate = Math.max(.01, plan.rate(u)), ph = plan.phase(u);
+  const L = DET.th + DET.sh - 4;
+  const strideT = 2 / rate, Tg = GROUND * strideT, travel = v * Tg, c = travel * .42, p = travel * .58;
+  const feet = [], toe = [];
+  for (let i = 0; i < 2; i++) {
+    const q = frac(ph / 2 + i * .5);
+    if (q < GROUND) {
+      // planted: where it touched down
+      const uc = u - q * strideT, xc = plan.x(uc) + d * c;
+      feet.push([xc, GY]); toe.push(0);
+    } else {
+      const f = (q - GROUND) / (1 - GROUND), rel = swingFoot(f, c, p, L);
+      feet.push([x + d * rel[0], GY - L + rel[1] + 2]); toe.push(lerp(.5, -.15, f) * (f < .8 ? 1 : 0));
+    }
+  }
+  const q0 = frac(ph / 2);
+  const bob = 6 * Math.cos(2 * Math.PI * (2 * q0 - .22));
+  const sw = Math.sin(2 * Math.PI * q0);
+  return {
+    x, y: GY - L + 6 + bob + (o.drop || 0), d, lean: o.lean ?? .2, feetAbs: feet, toeAng: toe,
+    hands: [[-sw * 20 + 8, 22 + sw * 6], [sw * 20 + 8, 22 - sw * 6]], tail: .35 + bob * .03 + Math.sin(ph * Math.PI) * .12,
+  };
+}
+// Footfalls: the times and places each foot touched down in [u0, u1].
+function contacts(plan, u0, u1) {
+  const out = [];
+  const k0 = Math.ceil(plan.phase(u0)), k1 = Math.floor(plan.phase(u1));
+  for (let k = k0; k <= k1; k++) {
+    // find u where phase == k (bisection)
+    let a = u0, b = u1;
+    for (let i = 0; i < 30; i++) { const m = (a + b) / 2; if (plan.phase(m) < k) a = m; else b = m; }
+    out.push({ u: b, k });
+  }
+  return out;
+}
+
+// ---------- the long take on the beach ----------
+// Story time in this shot. TF is the moment the water reaches her heels; everything after is
+// timed from it.
+const T_GO = 2.7;                           // she starts her watch at the tide board and sets off
+const TF = 9.4;
+const RUN_V = 215, RUN_RATE = 2.85, SPRINT_V = -360, SPRINT_RATE = 3.6;
+const X0 = 2000;
+const POV0 = TF + .3, POV1 = TF + 2.5;      // her look back along the trail
+const T_SKID = TF + 2.7, SKID = .6;
+const INS_LEN = .95;
+const T_LEVEL = T_SKID + 4.9;               // the stare steadies into a decision
+const T_CUT = T_SKID + 5.3;                 // her eyes cut back the way she came
+const T_PIVOT = T_SKID + 5.75, TURN = .28;  // the turn on the heel
+const PLAN = runPlan([
+  { t: 0, v: 0, rate: 0 }, { t: T_GO, v: 0, rate: 0 }, { t: T_GO + .9, v: RUN_V, rate: RUN_RATE }, { t: TF, v: RUN_V, rate: RUN_RATE },
+  { t: TF + 1.6, v: RUN_V * .8, rate: 2.3 },             // the rhythm falters
+  { t: T_SKID, v: RUN_V * .78, rate: 2.2 },
+], X0);
+const VSK = RUN_V * .78;
+const X_STOP = PLAN.x(T_SKID) + VSK * SKID / 2;
+const SPR = runPlan([{ t: 0, v: 0, rate: 1.5 }, { t: .4, v: SPRINT_V, rate: SPRINT_RATE }, { t: 9, v: SPRINT_V, rate: SPRINT_RATE }], X_STOP - 4);
+const XH = PLAN.x(TF);                      // where her heels are when the water arrives
+const XP = XH - 330;                        // the middle of the stretch she looks back at
+// First a small swash that runs over her shoes; then, as she looks back, a long tongue of foam
+// that runs up over her trail, over every print she has made, and drains away leaving it smooth.
+addWave({ t: TF + .05, at: XH, reach: GY + 12, sweep: 0, rush: .5, back: 1.2, x0: XH - 60, x1: XH + 90 });
+addWave({ t: TF + 1.25, at: XP, reach: GY + 24, sweep: -.0011, rush: .8, back: 1.0, x0: XH - 1100, x1: XH - 60 });
+// and a second that takes the stretch she ran while she was looking back
+addWave({ t: T_SKID + .25, at: X0, reach: GY + 22, sweep: 0, rush: 1.0, back: 1.3, x0: XH - 60, x1: PLAN.x(T_SKID) - 330, taper: 300 });
+// And at the end, the one that takes her skid marks.
+addWave({ t: T_PIVOT + 2.8, at: X_STOP, reach: GY + 30, sweep: .0004, x0: X_STOP - 700, x1: X_STOP + 400 });
+
+// Where she is and how she stands at story time u.
+const BOARD_X = X0 + 150;
+function detAt(u) {
+  if (u < T_GO + .25) {
+    // at the tide board: a look at it, a look at her watch, the press of a button
+    const L = DET.th + DET.sh - 4, up = u > 1.0 && u < 2.0;
+    return { x: X0, y: GY - L + 2 + Math.sin(u * 3) * .8, d: 1, lean: .04, feet: [[8, L - 2], [-8, L - 2]],
+      hands: [[22, 16], [14, 20]], tilt: up ? -.12 : .34, look: up ? [1, -.4] : [.6, .9], mouth: 'set', tail: 1.2,
+      blink: u > 2.3 && u < 2.4 };
+  }
+  if (u < T_SKID) {
+    const o = runPose(PLAN, u, 1);
+    // glancing down and back as the water hisses at her heels
+    const glance = seg(u, TF + .05, TF + .25) * (1 - seg(u, POV1 - .1, POV1 + .15));
+    if (glance > .5) { o.headD = -1; o.tilt = -o.lean - .35; o.look = [1, .8]; }
+    o.mouth = 'open'; o.wide = seg(u, TF + .1, TF + .4) * .6;
+    if (u > POV1) { o.look = [1, .1]; o.knit = 1; }
+    return o;
+  }
+  if (u < T_PIVOT) {
+    const k = u - T_SKID;
+    const L = DET.th + DET.sh - 4;
+    // the skid: front heel dug in, sliding, leaning back, arms out to brake
+    const slide = k < SKID ? VSK * (k - k * k / (2 * SKID)) : VSK * SKID / 2;
+    const xs = PLAN.x(T_SKID) + slide;
+    const fold = ease(seg(k, SKID - .05, SKID + .45));          // folding over, hands to knees
+    const rise = ease(seg(u, T_CUT + .05, T_PIVOT - .02));      // pushing up off the knees for the turn
+    const gasp = Math.max(0, 1 - seg(u, T_SKID + 1, T_LEVEL) * .65);
+    const heave = Math.sin(k * 2 * Math.PI * 1.25) * gasp;
+    const front = [xs + lerp(50, 46, fold), GY], back = [xs + lerp(-28, -44, fold), GY];
+    const hipX = xs + lerp(0, -18, fold) - rise * 6, hipY = lerp(GY - L + 4, GY - L + 10, fold) + heave * 1.2 - rise * 6;
+    const lean = lerp(-.42, 1.38, fold) - rise * 1.3;           // rising, weight going onto the back heel
+    const kneeF = [lerp(hipX, front[0], .55) + 8, lerp(hipY, GY, .5)], kneeB = [lerp(hipX, back[0], .5) + 8, lerp(hipY, GY, .5)];
+    const onKnees = fold > .5 && rise < .35;
+    return {
+      x: hipX, y: hipY, d: 1, lean, feetAbs: [front, back],
+      handsAbs: onKnees ? [[kneeF[0], kneeF[1] - 4], [kneeB[0] + 6, kneeB[1] - 6]] : null,
+      hands: onKnees ? null : fold > .5 ? [[18, 44], [-10, 46]] : [[46, 4], [36, 12]], elbowsBack: onKnees ? -1 : 1,
+      tilt: -lean - .04 + heave * .03,                           // the head held level, looking ahead
+      heave: heave * 1.6, tail: lerp(.1, 1.1, fold) * (1 - rise) + rise * .4,
+      mouth: u > T_LEVEL ? 'set' : 'gasp', gaspOpen: .55 + .45 * Math.abs(heave),
+      wide: u > T_LEVEL ? .3 : u > T_SKID + .9 ? 1 : .6, lid: u > T_LEVEL ? .28 : 0, knit: u > T_LEVEL ? 1 : 0,
+      look: u > T_CUT ? [-1, 0] : [1, -.05], flush: 1,
+      headD: u > T_CUT + .22 ? -1 : 1,                           // the head turns before the body
+    };
+  }
+  // the turn on the heel, then the sprint the other way
+  const k = u - T_PIVOT;
+  if (k < TURN) {
+    const f = ease(k / TURN);
+    return { x: X_STOP - 6, y: GY - (DET.th + DET.sh - 4) + 2, d: 1, flip: Math.cos(Math.PI * f), lean: lerp(-.1, .25, f),
+      feetAbs: [[X_STOP + lerp(20, -10, f), GY], [X_STOP - lerp(30, -26, f), GY]], hands: [[30 - f * 40, 20], [-20 + f * 40, 24]],
+      tilt: 0, headD: -1, look: [1, 0], mouth: 'set', tail: lerp(.4, -.3, f) };
+  }
+  const o = runPose(SPR, k - TURN, -1, { lean: lerp(.18, .34, seg(k, TURN, .6)) });
+  o.mouth = 'set'; o.look = [1, 0]; o.tail = .55 + Math.sin(k * 20) * .1;
+  return o;
+}
+
+function shotBeach(u) {
+  const o = detAt(u), x = o.x;
+  // the camera: tracking with lead room; her look back along the trail; settling as she stops;
+  // pushing in on her face; pulling back for the turn and the sprint
+  let cx = u < T_SKID ? x + 120 : lerp(PLAN.x(T_SKID) + 120, X_STOP + 40, easeOut(seg(u, T_SKID, T_SKID + 1.0)));
+  // at the start, close on her and the board, easing out into the tracking shot
+  const open = 1 - ease(seg(u, T_GO - .2, T_GO + 1.8));
+  if (open > 0) cx = lerp(cx, X0 + 80, open);
+  const push = ease(seg(u, T_SKID + .9, T_SKID + 4.6)), back = ease(seg(u, T_PIVOT - .1, T_PIVOT + .45));
+  const near = ease(seg(u, T_GO + 1.4, T_GO + 3.0)) * (1 - ease(seg(u, TF - 2.0, TF - .5)));   // close on her breathing
+  const pushZ = lerp(lerp(1.38, 2.3, near), 2.8, push), z = lerp(pushZ, 1.2, back);
+  const headX = X_STOP + 52, headY = GY - 116;
+  CAM = { x: lerp(lerp(cx - near * 80, headX, push), X_STOP - 60, back), y: lerp(lerp(440 - near * 28, headY, push), 430, back), z };
+  if (open > 0) CAM = { x: cx, y: lerp(440, GY - 90, open), z: lerp(z, 1.95, open) };
+  const pov = u >= POV0 && u < POV1;
+  if (pov) CAM = { x: XP + 40 - (u - POV0) * 16, y: GY - 12, z: 2.4 };
+  const t = u;
+  PRINTS = [];
+  for (const c of contacts(PLAN, 0, Math.min(u, T_SKID))) PRINTS.push({ x: PLAN.x(c.u) + 20, y: GY + (c.k % 2 ? -3 : 3), t: c.u, d: 1 });
+  if (u > T_SKID) PRINTS.push({ x: X_STOP + 42, y: GY + 3, t: T_SKID + .1, d: 1, skid: true }, { x: X_STOP - 26, y: GY - 3, t: T_SKID + .3, d: 1, skid: true });
+  if (u > T_PIVOT + TURN) for (const c of contacts(SPR, 0, u - T_PIVOT - TURN)) PRINTS.push({ x: SPR.x(c.u) - 20, y: GY + (c.k % 2 ? -3 : 3), t: T_PIVOT + TURN + c.u, d: -1 });
+  const vx0 = CAM.x - W / 2 / CAM.z - 400, vx1 = CAM.x + W / 2 / CAM.z + 400;
+  layer(.02, skyMist);
+  layer(.12, farLand);
+  layer(.16, () => boathouse(3900));
+  layer(.2, () => mist(1));
+  layer(.3, sea);
+  layer(.55, breakers);
+  layer(.75, () => groynes(vx0 * .75 - 600, vx1 * .75 + 600));
+  layer(1, () => {
+    sand(vx0, vx1, t);
+    printsLayer(t);
+    swashLayer(vx0, vx1, t);
+    blob(o.x + 4, GY + 4, 34, 5, 'rgba(60,62,60,.18)');
+    // spray where the water hisses at her heels
+    const sp = seg(u, TF - .05, TF + .7);
+    if (sp > 0 && sp < 1) for (let k = 0; k < 10; k++) { const r = R(900 + k); blob(PLAN.x(TF + .1) - 6 + (r() - .5) * 60, GY - 4 - Math.sin(sp * Math.PI) * (6 + r() * 26) * (1 - sp * .5), 2.6, 2, `rgba(240,244,242,${1 - sp})`); }
+    // sand thrown up by the skid
+    const sk = seg(u, T_SKID, T_SKID + 1.0);
+    if (sk > 0 && sk < 1) for (let k = 0; k < 26; k++) { const r = R(950 + k); blob(PLAN.x(T_SKID) + 50 + sk * (40 + r() * 130), GY - Math.sin(Math.min(1, sk * 1.3) * Math.PI) * (12 + r() * 54), 2.4 + r() * 2, 2 + r() * 1.5, `rgba(150,138,118,${.9 * (1 - sk)})`); }
+    // a puff of sand at the heel as she spins round
+    const pv = seg(u, T_PIVOT - .02, T_PIVOT + .9);
+    if (pv > 0 && pv < 1) for (let k = 0; k < 9; k++) { const r = R(980 + k); blob(X_STOP + (r() - .5) * 60 * pv, GY - 6 - pv * 22 * r(), 6 + pv * 16, 4 + pv * 6, `rgba(170,160,140,${.55 * (1 - pv)})`); }
+    let D;
+    if (u < T_GO + 3) tideBoard(BOARD_X, GY + 50);
+    if (o.flip != null) {
+      // the turn: in-betweens squeezed through the edge-on pose
+      ctx.save(); ctx.translate(o.x, 0); ctx.scale(Math.max(.34, Math.abs(o.flip)), 1); ctx.translate(-o.x, 0);
+      D = det({ ...o, d: o.flip >= 0 ? 1 : -1, headD: -1 }); ctx.restore();
+    } else D = det(o);
+    // breath in the cold air
+    if (u > T_SKID + .6 && u < T_PIVOT) {
+      const k = u - T_SKID - .6, ph = frac(k * 1.25), m = D.hp(1.0, .6);
+      if (ph < .5) { ctx.save(); ctx.globalAlpha = .4 * Math.sin(ph / .5 * Math.PI); blob(m[0] + 10 + ph * 60, m[1] + 4 - ph * 14, 6 + ph * 26, 4 + ph * 12, '#f4f6f5'); ctx.restore(); }
+    }
+  });
+  if (!pov) layer(1.5, () => foreground(vx0 * 1.5 - 800, vx1 * 1.5 + 800));
+  // the moment the sound goes: the colour drains and a cold vignette closes in
+  const drain = seg(u, TF + .5, TF + 1.2) * (1 - seg(u, T_PIVOT, T_PIVOT + .4));
+  if (drain > 0) {
+    ctx.save(); ctx.globalCompositeOperation = 'saturation'; ctx.fillStyle = `rgba(128,128,128,${.55 * drain})`; ctx.fillRect(0, 0, W, H); ctx.restore();
+    const v = ctx.createRadialGradient(W / 2, H / 2, H * .25, W / 2, H / 2, H * .9);
+    v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, `rgba(16,22,30,${.5 * drain})`); ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+  }
+  echoLine(u);
+  inserts(u);
+}
+
+// The tide board at the top of the beach.
+function tideBoard(x, y) {
+  limb([[x, y], [x, y - 120]], 7, '#6a5e50', 1600);
+  ink([[x - 64, y - 196], [x + 64, y - 196], [x + 64, y - 112], [x - 64, y - 112]], { fill: '#e9e4d6', w: 2.4, id: 1601, still: true, sharp: true });
+  ctx.fillStyle = '#2f4a6a'; ctx.fillRect(x - 63, y - 195, 126, 22);
+  ctx.save(); ctx.textAlign = 'center';
+  ctx.fillStyle = '#f3efe2'; ctx.font = 'bold 14px "Helvetica Neue",Arial,sans-serif'; ctx.fillText('TIDE TIMES', x, y - 179);
+  ctx.fillStyle = '#2a2a2a'; ctx.font = 'bold 21px "Helvetica Neue",Arial,sans-serif'; ctx.fillText('HIGH 05:12', x, y - 146);
+  ctx.fillStyle = '#666'; ctx.font = '16px "Helvetica Neue",Arial,sans-serif'; ctx.fillText('LOW 11:31', x, y - 124);
+  ctx.restore();
+}
+function dayLabel(text, u, dur) {
+  ctx.save(); ctx.globalAlpha = ease(seg(u, .3, .9)) * (1 - ease(seg(u, dur - .6, dur - .2)));
+  ctx.font = '600 30px "Helvetica Neue",Arial,sans-serif'; const tw = ctx.measureText(text).width;
+  ctx.fillStyle = 'rgba(16,20,24,.55)'; ctx.fillRect(36, 34, tw + 36, 50);
+  ctx.fillStyle = '#f6f4ee'; ctx.fillText(text, 54, 70); ctx.restore();
+}
+
+// The witness's words come back, in her head.
+const LINE = 'Not a single footprint.';
+function echoLine(u) {
+  const f = seg(u, TF + .5, TF + 4.0);
+  if (f <= 0 || f >= 1) return;
+  ctx.save(); ctx.textAlign = 'center'; ctx.font = 'italic 34px ' + SERIF;
+  const a = Math.min(1, f * 6, (1 - f) * 4);
+  ctx.fillStyle = '#f3f1ea'; ctx.shadowColor = 'rgba(0,0,0,.6)'; ctx.shadowBlur = 10;
+  // fading echoes of the words, then the words themselves
+  for (let k = 3; k >= 1; k--) { ctx.globalAlpha = a * .12 * (1 - f * .6); ctx.fillText(LINE, W / 2 + k * 10, H - 92 - k * 2); }
+  ctx.globalAlpha = a * .92; ctx.fillText('“' + LINE + '”', W / 2, H - 92);
+  ctx.restore();
+}
+
+// The pieces: three images, each held long enough to read, cut in hard.
+const INSERTS = [[T_SKID + 1.6, insertTide], [T_SKID + 2.65, insertWitness], [T_SKID + 3.7, insertImagined]];
+function inserts(u) {
+  for (const [t0, fn] of INSERTS) {
+    if (u >= t0 && u < t0 + INS_LEN) {
+      const k = u - t0; ctx.save(); fn(k); ctx.restore();
+      if (k < .06) { ctx.fillStyle = `rgba(255,255,255,${.35 * (1 - k / .06)})`; ctx.fillRect(0, 0, W, H); }
+    }
+  }
+}
+function insertTide(k) {
+  ctx.fillStyle = '#5d6b70'; ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.translate(W / 2, H / 2); ctx.scale(1 + k * .05, 1 + k * .05);
+  ink([[-330, -190], [330, -190], [330, 190], [-330, 190]], { fill: '#e9e4d6', w: 4, id: 990, sharp: true });
+  ctx.fillStyle = '#2f4a6a'; ctx.fillRect(-330, -190, 660, 70);
+  ctx.textAlign = 'center'; ctx.fillStyle = '#f3efe2'; ctx.font = 'bold 40px "Helvetica Neue",Arial,sans-serif'; ctx.fillText('TIDE TIMES', 0, -140);
+  ctx.fillStyle = '#2a2a2a'; ctx.font = 'bold 64px "Helvetica Neue",Arial,sans-serif';
+  ctx.fillText('HIGH  05:12', 0, -20); ctx.font = '44px "Helvetica Neue",Arial,sans-serif'; ctx.fillStyle = '#666'; ctx.fillText('LOW   11:31', 0, 70);
+  ctx.restore();
+}
+function insertWitness(k) {
+  ctx.fillStyle = '#3e4a44'; ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.translate(W / 2 - 40, H / 2 + 20); ctx.scale(4.4 + k * .15, 4.4 + k * .15);
+  witnessProfile([0, 0], 22, 1, { talk: true }, 620);
+  ctx.restore();
+  ctx.save(); ctx.textAlign = 'center'; ctx.font = 'italic 44px ' + SERIF; ctx.fillStyle = '#f3f1ea'; ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 10;
+  ctx.fillText('“…at six.”', W / 2, H - 90); ctx.restore();
+}
+// What she now sees: before six, at high water, someone walking to the boathouse, and the sea
+// taking every print behind them.
+function insertImagined(k) {
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#2c3846'); g.addColorStop(.45, '#4a5a66'); g.addColorStop(1, '#5e6668');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.translate(W / 2, H / 2); ctx.scale(1 + k * .06, 1 + k * .06); ctx.translate(-W / 2, -H / 2);
+  ctx.fillStyle = '#3a4752'; ctx.fillRect(0, 300, W, 120);                       // the sea, high
+  ctx.fillStyle = '#26303a';
+  ctx.beginPath(); ctx.moveTo(960, 330); ctx.lineTo(960, 270); ctx.lineTo(1030, 230); ctx.lineTo(1100, 270); ctx.lineTo(1100, 330); ctx.fill();  // the boathouse
+  ctx.fillRect(900, 326, 280, 8);
+  // a figure walking toward it along the very edge of the water
+  const fx = 700 + k * 40;
+  ctx.fillStyle = '#161b21';
+  ctx.beginPath(); ctx.ellipse(fx, 360, 13, 15, 0, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(fx - 18, 376); ctx.lineTo(fx + 16, 376); ctx.lineTo(fx + 20, 450); ctx.lineTo(fx - 22, 450); ctx.fill();
+  ctx.lineWidth = 10; ctx.strokeStyle = '#161b21'; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(fx - 8, 450); ctx.lineTo(fx - 26, 500); ctx.moveTo(fx + 8, 450); ctx.lineTo(fx + 22, 500); ctx.stroke();
+  // prints behind, and the swash already over the oldest of them
+  for (let i = 1; i < 9; i++) blob(fx - 60 - i * 70, 505 + (i % 2 ? -5 : 5), 14, 5, 'rgba(20,24,28,.55)');
+  const edge = lerp(150, 460, easeOut(k / INS_LEN));
+  ctx.fillStyle = 'rgba(120,140,150,.85)'; ctx.beginPath(); ctx.moveTo(-10, 400);
+  for (let x = -10; x <= edge; x += 20) ctx.lineTo(x, 400 + 140 * (1 - x / (edge + 60)) + Math.sin(x * .05) * 6);
+  ctx.lineTo(edge + 40, 400); ctx.fill();
+  ctx.restore();
+  ctx.save(); ctx.font = 'bold 30px "Helvetica Neue",Arial,sans-serif'; ctx.fillStyle = 'rgba(236,240,240,.8)'; ctx.fillText('05:12', 40, 60); ctx.restore();
+}
+
+// The witness: an old man with a cap and a grey stubble, seen in three-quarter view.
+function witnessHead(C, s, talking, id) {
+  const r = 22 * s;
+  ink(ellPts(C, r, r * 1.08, 14), { fill: '#e2b597', w: 1.6 / s * s, id: 600 });
+  ink([[C[0] - r * 1.05, C[1] - r * .25], [C[0] - r * .9, C[1] - r * .95], [C[0], C[1] - r * 1.25], [C[0] + r * .95, C[1] - r * .9], [C[0] + r * 1.4, C[1] - r * .55], [C[0] + r * .9, C[1] - r * .45], [C[0] - r * .9, C[1] - r * .25]], { fill: '#4d5560', w: 1.4, id: 601 });
+  blob(C[0] - r * .3, C[1] - r * .1, r * .07, r * .1, '#1e1a18'); blob(C[0] + r * .35, C[1] - r * .1, r * .07, r * .1, '#1e1a18');
+  ink([[C[0] - r * .5, C[1] - r * .32], [C[0] - r * .12, C[1] - r * .28]], { w: 1.2, id: 602 }); ink([[C[0] + r * .14, C[1] - r * .28], [C[0] + r * .55, C[1] - r * .32]], { w: 1.2, id: 603 });
+  ink([[C[0] + r * .05, C[1] - r * .1], [C[0] + r * .2, C[1] + r * .25], [C[0] - r * .02, C[1] + r * .3]], { w: 1.2, id: 604 });
+  ctx.fillStyle = 'rgba(120,110,105,.35)'; ctx.beginPath(); ctx.ellipse(C[0], C[1] + r * .6, r * .7, r * .38, 0, 0, 7); ctx.fill();
+  if (talking) ink(ellPts([C[0], C[1] + r * .55], r * .2, r * .12, 8), { fill: '#5e2422', w: 1.1, id: 605 });
+  else ink([[C[0] - r * .2, C[1] + r * .55], [C[0] + r * .2, C[1] + r * .55]], { w: 1.2, id: 605 });
+}
+
+
+// ---------- the witness ----------
+const WC = { skin: '#e0b090', coat: '#6b6450', cap: '#4d5560', stubble: 'rgba(120,112,105,.35)', trousers: '#4a4640' };
+// His head in profile (d = 1 faces right): flat cap, big nose, grey stubble.
+function witnessProfile(C, r, d, o, id) {
+  const hp = (hx, hy) => [C[0] + d * hx * r, C[1] + hy * r];
+  const E = (cx, cy, rx, ry, n = 12) => ellPts([0, 0], 1, 1, n).map(([a, b]) => hp(cx + a * rx, cy + b * ry));
+  ink(E(0, 0, 1, 1.06, 16), { fill: WC.skin, w: 2, id: id + 1 });
+  ctx.save(); ctx.fillStyle = WC.stubble; const j = E(.25, .55, .75, .45, 12); ctx.beginPath(); j.forEach((p, i) => i ? ctx.lineTo(...p) : ctx.moveTo(...p)); ctx.fill(); ctx.restore();
+  ink(E(-.12, .12, .17, .26, 8), { fill: WC.skin, w: 1.4, id: id + 2 });
+  ink(E(1.0, .14, .26, .22, 10), { fill: '#d99a7c', w: 1.6, id: id + 3 });
+  const eye = hp(.5, -.08);
+  if (o.blink) ink([hp(.38, -.06), hp(.6, -.05)], { w: 1.6, id: id + 4 }); else blob(eye[0], eye[1], .08 * r, .11 * r, '#1e1a18');
+  ink([hp(.32, -.3), hp(.68, -.28 + (o.brow || 0) * -.1)], { w: 2.4, stroke: '#9a9590', id: id + 5 });
+  if (o.talk) ink(E(.72, .58, .1, .07 + .05 * Math.abs(Math.sin(NOW * 14)), 8), { fill: '#5e2422', w: 1.3, id: id + 6 });
+  else ink([hp(.6, .58), hp(.84, .6)], { w: 1.5, id: id + 6 });
+  ink([[-1.1, .02], [-1.04, -.55], [-.6, -1.1], [.1, -1.22], [.78, -.96], [1.18, -.62], [1.55, -.44], [1.5, -.31], [.96, -.36], [.2, -.42], [-.6, -.26]].map(([a, b]) => hp(a, b)), { fill: WC.cap, w: 2, id: id + 7 });
+}
+// The witness seated, side on (d = 1 faces right).
+function witnessSeated(x, y, d, o, id) {
+  const p = (a, b) => [x + d * a, y + b];
+  limb([p(0, 0), p(44, 2), p(46, 46)], 11, WC.trousers, id);
+  ink([p(40, 44), p(62, 44), p(62, 50), p(38, 50)], { fill: '#2e2a26', w: 1.4, id: id + 1 });
+  ink([p(-16, 4), p(18, 4), p(22, -40), p(10, -70), p(-12, -72), p(-20, -40)], { fill: WC.coat, w: 2, id: id + 2 });
+  limb([p(4, -62), p(22, -30), p(44, -24)], 9, shade(WC.coat, -.1), id + 3);
+  ink(ellPts(p(46, -24), 5, 4.5, 7), { fill: WC.skin, w: 1.3, id: id + 4 });
+  limb([p(-2, -70), p(2, -80)], 9, WC.skin, id + 5);
+  witnessProfile(p(6, -98), 20, d, o, id + 10);
+}
+
+// ---------- the interview room ----------
+function interviewRoom(u) {
+  ctx.fillStyle = '#7d8a80'; ctx.fillRect(-200, -200, W + 400, H + 400);
+  ctx.fillStyle = 'rgba(0,0,0,.08)'; ctx.fillRect(-200, 470, W + 400, 400);
+  ctx.fillStyle = '#5f6a62'; ctx.fillRect(-200, 520, W + 400, 400);           // floor
+  ink([[-200, 520], [W + 200, 520]], { w: 2, id: 1500, still: true });
+  // a high window with blinds and the grey morning behind
+  ctx.fillStyle = '#c9cfcd'; ctx.fillRect(820, 110, 240, 170);
+  for (let k = 0; k < 11; k++) { ctx.fillStyle = 'rgba(70,78,74,.55)'; ctx.fillRect(820, 112 + k * 15.5, 240, 6); }
+  ink([[820, 110], [1060, 110], [1060, 280], [820, 280]], { w: 2.4, id: 1501, still: true, close: true, sharp: true });
+  // slanted light from the blinds across the far wall
+  ctx.save(); ctx.globalAlpha = .12; ctx.fillStyle = '#fff';
+  for (let k = 0; k < 6; k++) { ctx.beginPath(); ctx.moveTo(500 + k * 30, 200 + k * 26); ctx.lineTo(760 + k * 30, 200 + k * 26); ctx.lineTo(720 + k * 30, 212 + k * 26); ctx.lineTo(460 + k * 30, 212 + k * 26); ctx.fill(); }
+  ctx.restore();
+  // a clock on the wall
+  ink(ellPts([300, 150], 30, 30, 16), { fill: '#efece4', w: 2, id: 1502, still: true });
+  ink([[300, 150], [300, 128]], { w: 2.4, id: 1503, still: true }); ink([[300, 150], [316, 156]], { w: 2.4, id: 1504, still: true });
+}
+function table(x0, x1, y) {
+  ink([[x0, y], [x1, y], [x1, y + 10], [x0, y + 10]], { fill: '#8a7a64', w: 2, id: 1510, still: true, sharp: true });
+  for (const x of [x0 + 20, x1 - 20]) limb([[x, y + 10], [x, 522]], 6, '#6f6250', 1511 + x);
+}
+function chair(x, y, d, id) {
+  const p = (a, b) => [x + d * a, y + b];
+  limb([p(-18, 0), p(-18, 50)], 4, '#3e3a36', id); limb([p(18, 0), p(18, 50)], 4, '#3e3a36', id + 1);
+  ink([p(-22, -4), p(22, -4), p(22, 4), p(-22, 4)], { fill: '#4a4540', w: 1.5, id: id + 2 });
+  limb([p(-20, 0), p(-24, -70)], 5, '#3e3a36', id + 3);
+}
+
+// ---------- the habit: earlier mornings ----------
+// The same run on other days, as short tracking shots: Monday in the rain, wide; Wednesday close
+// on her feet, the prints they leave.
+const MON = { x0: -16000, t0: 40, z: .82, y: 390, lead: 160, rain: true, label: 'Monday', dur: 4.2 };
+const WED = { x0: -9000, t0: 70, z: 3.1, y: GY - 34, lead: 10, wind: true, label: 'Wednesday', dur: 4.2 };
+function vignette(u, V) {
+  if (!V.plan) V.plan = runPlan([{ t: 0, v: RUN_V, rate: RUN_RATE }, { t: 30, v: RUN_V, rate: RUN_RATE }], V.x0);
+  const k = u + 3, T = V.t0 + u;
+  const o = runPose(V.plan, k, 1);
+  if (V.wind) o.tail = .05 + Math.sin(NOW * 11) * .12;
+  if (V.rain) { o.tilt = .18; o.mouth = 'set'; }
+  CAM = { x: o.x + V.lead, y: V.y, z: V.z };
+  PRINTS = contacts(V.plan, 0, k).map(c => ({ x: V.plan.x(c.u) + 20, y: GY + (c.k % 2 ? -3 : 3), t: V.t0 + c.u - 3, d: 1 }));
+  const vx0 = CAM.x - W / 2 / CAM.z - 400, vx1 = CAM.x + W / 2 / CAM.z + 400;
+  layer(.02, skyMist);
+  layer(.12, farLand);
+  layer(.2, () => mist(V.rain ? 1.4 : 1));
+  layer(.3, sea);
+  layer(.55, breakers);
+  layer(.75, () => groynes(vx0 * .75 - 600, vx1 * .75 + 600));
+  layer(1, () => { sand(vx0, vx1, T); printsLayer(T); swashLayer(vx0, vx1, T); blob(o.x + 4, GY + 4, 34, 5, 'rgba(60,62,60,.18)'); det(o); });
+  if (V.z < 2) layer(1.5, () => foreground(vx0 * 1.5 - 800, vx1 * 1.5 + 800));
+  if (V.rain) {
+    ctx.fillStyle = 'rgba(70,80,90,.18)'; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = 'rgba(230,236,240,.45)'; ctx.lineWidth = 1.4; const r = R(Math.floor(NOW * 12));
+    ctx.beginPath(); for (let i = 0; i < 160; i++) { const x = r() * (W + 200), y = r() * H; ctx.moveTo(x, y); ctx.lineTo(x - 14, y + 34); } ctx.stroke();
+  }
+  if (V.wind) {
+    ctx.strokeStyle = 'rgba(200,190,170,.35)'; ctx.lineWidth = 1.2; const r = R(Math.floor(NOW * 12) + 7);
+    ctx.beginPath(); for (let i = 0; i < 30; i++) { const x = r() * W, y = H * .55 + r() * H * .45; ctx.moveTo(x, y); ctx.lineTo(x - 60 - r() * 60, y + 2); } ctx.stroke();
+  }
+  dayLabel(V.label, u, V.dur);
+}
+const shotMon = u => vignette(u, MON), shotWed = u => vignette(u, WED);
+
+// ---------- Thursday: the interview ----------
+const W_LINE = 'I walked the beach at six. Not a single footprint, all the way to the boathouse.';
+const D_LINE = 'So nobody came along the beach.', W_LINE2 = 'Not a soul.';
+const ICAPS = [[.8, 6.8, '“' + W_LINE + '”'], [7.4, 10.4, '“' + D_LINE + '”'], [10.8, 12.4, '“' + W_LINE2 + '”']];
+// Shots: two-shot, the witness close for his line, her close for the question, the witness again,
+// then her notebook as she underlines what he said.
+const ICUTS = [[0, 'two'], [.9, 'wit'], [7.1, 'det'], [10.5, 'wit'], [12.3, 'book']];
+function shotInterview(u) {
+  let cut = 'two'; for (const [t0, c] of ICUTS) if (u >= t0) cut = c;
+  const drift = u * .01;
+  CAM = cut === 'wit' ? { x: 440, y: 392, z: 2.9 + u * .03 } : cut === 'det' ? { x: 770, y: 392, z: 3.0 + drift } : { x: 612, y: 392, z: 1.32 + drift };
+  const talkW = (u > ICAPS[0][0] && u < ICAPS[0][1] - .4) || (u > ICAPS[2][0] && u < ICAPS[2][1] - .3);
+  const talkD = u > ICAPS[1][0] && u < ICAPS[1][1] - .4;
+  const writing = u > 2 && u < 6.4, under = seg(u, 12.7, 13.3);
+  if (cut === 'book') { notebook(u - 12.3, under); return; }
+  layer(1, () => {
+    interviewRoom(u);
+    chair(400, 470, 1, 1520);
+    chair(812, 470, -1, 1530);
+    witnessSeated(410, 470, 1, { talk: talkW, blink: frac(u / 3.7) > .96 }, 1540);
+    table(520, 760, 428);
+    // a cassette recorder, its red light on
+    ink([[560, 428], [610, 428], [610, 410], [560, 410]], { fill: '#2e2f33', w: 1.4, id: 1560, still: true, sharp: true });
+    blob(600, 416, 2.5, 2.5, frac(u * 1.2) > .5 ? '#d43b30' : '#7a2a26');
+    ink([[660, 427], [720, 427], [716, 422], [664, 422]], { fill: '#efe9d8', w: 1.4, id: 1561, still: true });
+    const pen = writing ? [690 + Math.sin(u * 9) * 10, 420 + Math.sin(u * 23) * 1.5] : [704, 418];
+    det({ x: 800, y: 470, d: -1, lean: writing ? .32 : .14, feet: [[48, 50], [42, 52]],
+      handsAbs: [pen, [728, 421]], elbowsBack: -1, tilt: writing ? .3 : -.02, look: writing ? [.4, .8] : [1, 0],
+      mouth: talkD ? (Math.floor(u * 7) % 2 ? 'open' : 'set') : 'set', tail: 1.25, blink: frac(u / 4.1) > .96 });
+  });
+  dayLabel('Thursday', u, 13.6);
+}
+// Her notebook, close: what he said, and the line under it.
+function notebook(k, under) {
+  ctx.fillStyle = '#6f6250'; ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.translate(W / 2, H / 2 + 10); ctx.rotate(-.04); ctx.scale(1 + k * .03, 1 + k * .03);
+  ink([[-360, -230], [360, -230], [360, 230], [-360, 230]], { fill: '#f1ecdc', w: 3, id: 1570, still: true, sharp: true });
+  ctx.strokeStyle = 'rgba(80,120,170,.35)'; ctx.lineWidth = 2;
+  for (let y = -170; y < 230; y += 52) { ctx.beginPath(); ctx.moveTo(-340, y); ctx.lineTo(340, y); ctx.stroke(); }
+  ctx.fillStyle = '#25336e'; ctx.font = 'italic 46px "Bradley Hand","Segoe Print","Comic Sans MS",cursive';
+  ctx.fillText('Witness — 6:00 a.m.', -300, -128);
+  ctx.fillText('beach to boathouse', -300, -76);
+  ctx.font = 'italic bold 52px "Bradley Hand","Segoe Print","Comic Sans MS",cursive';
+  ctx.fillText('NO FOOTPRINTS', -300, -6);
+  ctx.fillText('→ he’s in the clear', -300, 66);
+  if (under > 0) { ctx.strokeStyle = '#25336e'; ctx.lineWidth = 5; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(-300, 12); ctx.lineTo(-300 + 420 * under, 8); ctx.stroke(); }
+  ctx.restore();
+}
+
+// ---------- the end ----------
+function shotEnd(u) {
+  ctx.fillStyle = '#16191c'; ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.textAlign = 'center'; ctx.globalAlpha = ease(seg(u, .3, 1.0)) * (1 - ease(seg(u, 2.6, 3.2)));
+  ctx.fillStyle = '#ece9e1'; ctx.font = 'italic 64px ' + SERIF; ctx.fillText('The Stumble-Stop', W / 2, H / 2);
+  ctx.restore();
+}
+
+// ---------- sound ----------
+// Synthesized in the page. Continuous layers (surf, wind, the drone) follow the film clock; events
+// (footfalls, breaths, the hiss of the wave, the skid, the hits) are scheduled just ahead of it.
+const SND = { ctx: null, master: null, on: true, layers: null, events: [], next: 0 };
+function soundEvents() {
+  const ev = [];
+  const at = (key, u, type, g = 1) => { const S = SHOTS_BY[key]; if (S) ev.push({ t: SHOT_START[key] + realOf(S, u), type, g }); };
+  const feet = (key, plan, u0, u1, off, g) => {
+    for (const c of contacts(plan, u0, u1)) { at(key, c.u - off, 'step', g); if (c.k % 2 === 0) at(key, c.u - off + .02, c.k % 4 === 0 ? 'in' : 'out', .9); }
+  };
+  for (const V of [['mon', MON, 1], ['wed', WED, 1.5]]) { const [key, M, g] = V; if (!M.plan) M.plan = runPlan([{ t: 0, v: RUN_V, rate: RUN_RATE }, { t: 30, v: RUN_V, rate: RUN_RATE }], M.x0); feet(key, M.plan, 3, 3 + M.dur, 3, g); }
+  for (let k = 1; k < 13; k++) at('interview', k, 'tick', .6);
+  for (let u = 2.1; u < 6.3; u += .35) at('interview', u, 'scratch', .8);
+  at('interview', 12.7, 'scratch', 1.4);
+  at('beach', 2.25, 'beep');
+  feet('beach', PLAN, T_GO, T_SKID, 0, 1);
+  at('beach', TF - .05, 'hiss');
+  at('beach', TF + .3, 'swell');
+  at('beach', T_SKID, 'skid');
+  for (let k = 0, u = T_SKID + .6; u < T_LEVEL; k++, u += .8) at('beach', u, 'gasp', 1 - k * .08);
+  for (const [t0] of INSERTS) at('beach', t0, 'hit');
+  at('beach', T_PIVOT, 'scuff');
+  for (const c of contacts(SPR, .1, 4)) at('beach', T_PIVOT + TURN + c.u, 'step', 1.2);
+  ev.sort((a, b) => a.t - b.t);
+  return ev;
+}
+// The levels of the continuous layers at film time t.
+const QUIET = { surf: 0, wind: 0, rain: 0, room: 0, drone: 0, droneF: 300 };
+function levels(t) {
+  const key = shotAt(t), u = t - SHOT_START[key];
+  if (key === 'mon') return { ...QUIET, surf: .12, rain: .16, wind: .05 };
+  if (key === 'wed') return { ...QUIET, surf: .18, wind: .2 };
+  if (key === 'interview') return { ...QUIET, room: .1 };
+  if (key !== 'beach') return QUIET;
+  const drop = seg(u, TF + .45, TF + .85) * (1 - seg(u, T_PIVOT + .05, T_PIVOT + .6));
+  // the surf swells as each wave runs up the beach near her
+  const x = detAt(u).x;
+  const run = clamp((swashEdge(x, u) - SHORE) / 40);
+  const surf = (.16 + .2 * run) * (1 - drop), wind = .07 * (1 - drop * .9);
+  const swell = seg(u, TF + .3, T_SKID + 3.3), cut = u > T_CUT - .1 ? 0 : 1;   // silence before the turn
+  return { ...QUIET, surf, wind, drone: .22 * swell ** 1.4 * cut, droneF: lerp(250, 2400, swell) };
+}
+function soundInit() {
+  if (SND.ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  const A = new AC(); SND.ctx = A;
+  const master = A.createGain(); master.gain.value = SND.on ? .9 : 0; master.connect(A.destination); SND.master = master;
+  const nb = A.createBuffer(1, A.sampleRate * 3, A.sampleRate), d = nb.getChannelData(0);
+  let b0 = 0; for (let i = 0; i < d.length; i++) { const w = Math.random() * 2 - 1; b0 = .97 * b0 + .03 * w; d[i] = w * .5 + b0 * 3; }
+  SND.noise = nb;
+  const loop = (type, f, q) => {
+    const s = A.createBufferSource(); s.buffer = nb; s.loop = true;
+    const fl = A.createBiquadFilter(); fl.type = type; fl.frequency.value = f; fl.Q.value = q;
+    const g = A.createGain(); g.gain.value = 0; s.connect(fl); fl.connect(g); g.connect(master); s.start(); return { g, f: fl };
+  };
+  const surf = loop('lowpass', 700, .5), wind = loop('bandpass', 380, .6), rain = loop('highpass', 3500, .4), room = loop('lowpass', 160, .7);
+  // the drone: a close, unresolved cluster of strings, slowly opening
+  const dg = A.createGain(); dg.gain.value = 0;
+  const df = A.createBiquadFilter(); df.type = 'lowpass'; df.frequency.value = 300; df.Q.value = 2;
+  df.connect(dg); dg.connect(master);
+  for (const [f, det] of [[73.4, -6], [110, 5], [146.8, -4], [155.6, 7], [220, -3], [233.1, 9]]) {
+    const o = A.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; o.detune.value = det;
+    const g = A.createGain(); g.gain.value = .16; o.connect(g); g.connect(df); o.start();
+    const lfo = A.createOscillator(); lfo.frequency.value = .2 + Math.random() * .3; const lg = A.createGain(); lg.gain.value = 6; lfo.connect(lg); lg.connect(o.detune); lfo.start();
+  }
+  SND.layers = { surf, wind, rain, room, drone: { g: dg, f: df } };
+  SND.events = soundEvents();
+}
+function burst(when, { f = 800, type = 'lowpass', q = .7, dur = .08, g = .5, attack = .004, f2 = null }) {
+  const A = SND.ctx, s = A.createBufferSource(); s.buffer = SND.noise; s.loop = true;
+  const fl = A.createBiquadFilter(); fl.type = type; fl.frequency.setValueAtTime(f, when); fl.Q.value = q;
+  if (f2) fl.frequency.exponentialRampToValueAtTime(f2, when + dur);
+  const gn = A.createGain(); gn.gain.setValueAtTime(0, when); gn.gain.linearRampToValueAtTime(g, when + attack); gn.gain.exponentialRampToValueAtTime(.0005, when + dur);
+  s.connect(fl); fl.connect(gn); gn.connect(SND.master); s.start(when, Math.random() * 2); s.stop(when + dur + .05);
+}
+function thump(when, f, dur, g) {
+  const A = SND.ctx, o = A.createOscillator(); o.frequency.setValueAtTime(f, when); o.frequency.exponentialRampToValueAtTime(f * .5, when + dur);
+  const gn = A.createGain(); gn.gain.setValueAtTime(g, when); gn.gain.exponentialRampToValueAtTime(.0005, when + dur);
+  o.connect(gn); gn.connect(SND.master); o.start(when); o.stop(when + dur + .05);
+}
+function play(e, when) {
+  const g = e.g || 1;
+  switch (e.type) {
+    case 'step': burst(when, { f: 520, dur: .09, g: .35 * g }); thump(when, 75, .12, .35 * g); break;
+    case 'in': burst(when, { f: 1300, type: 'bandpass', q: 1.2, dur: .32, g: .06 * g, attack: .12 }); break;
+    case 'out': burst(when, { f: 900, type: 'bandpass', q: 1, dur: .3, g: .08 * g, attack: .03 }); break;
+    case 'hiss': burst(when, { f: 2600, type: 'highpass', q: .5, dur: 1.4, g: .22, attack: .25 }); break;
+    case 'swell': burst(when, { f: 300, type: 'bandpass', q: 1.5, dur: 1.2, g: .2, attack: 1.1, f2: 1600 }); break;
+    case 'skid': burst(when, { f: 2200, type: 'bandpass', q: .8, dur: .6, g: .3, attack: .02, f2: 500 }); break;
+    case 'gasp': burst(when, { f: 1100, type: 'bandpass', q: .9, dur: .55, g: .2 * g, attack: .06 }); burst(when + .45, { f: 800, type: 'bandpass', q: .9, dur: .3, g: .1 * g }); break;
+    case 'hit': thump(when, 55, .9, .7); burst(when, { f: 180, dur: .5, g: .35 }); break;
+    case 'tick': burst(when, { f: 3200, type: 'bandpass', q: 4, dur: .03, g: .12 * g }); break;
+    case 'scratch': burst(when, { f: 4200, type: 'bandpass', q: 2, dur: .22, g: .05 * g, attack: .05 }); break;
+    case 'beep': for (const k of [0, .14]) { const A = SND.ctx, o = A.createOscillator(), gn = A.createGain(); o.frequency.value = 2400; gn.gain.setValueAtTime(.08, when + k); gn.gain.setValueAtTime(0, when + k + .07); o.connect(gn); gn.connect(SND.master); o.start(when + k); o.stop(when + k + .1); } break;
+    case 'scuff': burst(when, { f: 1400, type: 'bandpass', q: .7, dur: .25, g: .3 }); break;
+  }
+}
+function soundUpdate(clock, running) {
+  if (!SND.ctx) return;
+  const A = SND.ctx, now = A.currentTime;
+  const L = running ? levels(clock) : QUIET;
+  SND.layers.surf.g.gain.setTargetAtTime(L.surf, now, .08);
+  SND.layers.wind.g.gain.setTargetAtTime(L.wind, now, .2);
+  SND.layers.rain.g.gain.setTargetAtTime(L.rain, now, .2);
+  SND.layers.room.g.gain.setTargetAtTime(L.room, now, .2);
+  SND.layers.drone.g.gain.setTargetAtTime(L.drone, now, L.drone < .01 ? .015 : .15);
+  SND.layers.drone.f.frequency.setTargetAtTime(L.droneF, now, .3);
+  if (!running) return;
+  while (SND.next < SND.events.length && SND.events[SND.next].t < clock - .05) SND.next++;
+  while (SND.next < SND.events.length && SND.events[SND.next].t < clock + .12) {
+    const e = SND.events[SND.next++]; play(e, now + Math.max(0, e.t - clock));
+  }
+}
+function soundSeek(clock) { SND.next = 0; while (SND.next < SND.events.length && SND.events[SND.next].t < clock) SND.next++; }
+
+// ---------- the exposure sheet ----------
+const SHOTS = [
+  { key: 'mon', dur: MON.dur, draw: shotMon, caps: [] },
+  { key: 'wed', dur: WED.dur, draw: shotWed, caps: [] },
+  { key: 'interview', dur: 13.6, draw: shotInterview, caps: ICAPS },
+  { key: 'beach', dur: T_PIVOT + 4.6, draw: shotBeach, caps: [] },
+  { key: 'end', dur: 3.4, draw: shotEnd, caps: [] },
+];
+const READ = text => 1.2 + text.split(/\s+/).length / 2.9, STRETCH = 1.5;
+for (const S of SHOTS) {
+  const knots = [[0, 0]]; let real = 0, story = 0; S.realCaps = [];
+  for (const [a, b, text] of S.caps) {
+    real += a - story; story = a; knots.push([story, real]);
+    const ra = real, avail = b - a, need = READ(text), k = Math.min(STRETCH, Math.max(1, need / avail));
+    real += avail * k; story = b; knots.push([story, real]);
+    if (need > avail * k) { real += need - avail * k; knots.push([story, real]); }
+    S.realCaps.push([ra, real, text]);
+  }
+  real += S.dur - story; knots.push([S.dur, real]); S.knots = knots; S.real = real;
+}
+function storyTime(S, r) {
+  const k = S.knots;
+  for (let i = 1; i < k.length; i++) if (r <= k[i][1]) { const [s0, r0] = k[i - 1], [s1, r1] = k[i]; return r1 > r0 ? s0 + (s1 - s0) * (r - r0) / (r1 - r0) : s1; }
+  return S.dur;
+}
+// And back: the time on the screen (from the shot's start) of story time u.
+function realOf(S, u) {
+  const k = S.knots;
+  for (let i = 1; i < k.length; i++) if (u <= k[i][0]) { const [s0, r0] = k[i - 1], [s1, r1] = k[i]; return s1 > s0 ? r0 + (r1 - r0) * (u - s0) / (s1 - s0) : r0; }
+  return S.real;
+}
+const TOTAL = SHOTS.reduce((a, s) => a + s.real, 0);
+const SHOT_START = {}, SHOTS_BY = {};
+{ let a = 0; for (const S of SHOTS) { SHOT_START[S.key] = a; SHOTS_BY[S.key] = S; a += S.real; } }
+function shotAt(t) { let key = SHOTS[0].key; for (const S of SHOTS) if (t >= SHOT_START[S.key]) key = S.key; return key; }
+
+function wrap(text, max) {
+  const words = text.split(' '), lines = []; let line = '';
+  for (const w of words) { const t = line ? line + ' ' + w : w; if (ctx.measureText(t).width > max && line) { lines.push(line); line = w; } else line = t; }
+  if (line) lines.push(line);
+  return lines;
+}
+function caption(text, a) {
+  ctx.save(); ctx.globalAlpha = a;
+  const g = ctx.createLinearGradient(0, H - 200, 0, H); g.addColorStop(0, 'rgba(12,14,16,0)'); g.addColorStop(.5, 'rgba(12,14,16,.45)'); g.addColorStop(1, 'rgba(12,14,16,.7)');
+  ctx.fillStyle = g; ctx.fillRect(0, H - 200, W, 200);
+  ctx.font = 'italic 29px ' + SERIF; ctx.textAlign = 'center';
+  const lines = wrap(text, 1000); let y = H - 50 - (lines.length - 1) * 37;
+  ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 8; ctx.fillStyle = '#f3f1ea';
+  for (const l of lines) { ctx.fillText(l, W / 2, y); y += 37; }
+  ctx.restore();
+}
+const GRAIN = [0, 1, 2].map(k => {
+  const c = document.createElement('canvas'); c.width = 320; c.height = 180;
+  const g = c.getContext('2d'), im = g.createImageData(320, 180), r = R(55 + k);
+  for (let i = 0; i < im.data.length; i += 4) { const v = 205 + r() * 50; im.data[i] = v * .98; im.data[i + 1] = v * .99; im.data[i + 2] = v; im.data[i + 3] = 255; }
+  g.putImageData(im, 0, 0); return c;
+});
+
+function render(t) {
+  BOIL = Math.floor(t * 8); NOW = t;
+  let acc = 0, i = 0;
+  while (i < SHOTS.length - 1 && t >= acc + SHOTS[i].real) { acc += SHOTS[i].real; i++; }
+  const S = SHOTS[i], r = t - acc, u = storyTime(S, r);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cvs.width, cvs.height);
+  ctx.setTransform(VIEW.k, 0, 0, VIEW.k, VIEW.ox, VIEW.oy);
+  ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
+  ctx.save(); S.draw(u); ctx.restore();
+  ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.globalAlpha = .3; ctx.drawImage(GRAIN[BOIL % 3], 0, 0, W, H); ctx.restore();
+  const v = ctx.createRadialGradient(W / 2, H / 2, H * .45, W / 2, H / 2, H * 1.05);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(14,18,24,.4)'); ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+  const fade = Math.max(0, 1 - r / .4, 1 - (S.real - r) / .9);
+  if (fade > 0) { ctx.fillStyle = `rgba(12,14,16,${fade})`; ctx.fillRect(0, 0, W, H); }
+  for (const [a, b, text] of S.realCaps) if (r > a && r < b) caption(text, Math.min(1, (r - a) / .35, (b - r) / .35));
+  ctx.restore();
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2), cw = innerWidth, ch = innerHeight;
+  cvs.width = Math.round(cw * dpr); cvs.height = Math.round(ch * dpr);
+  cvs.style.width = cw + 'px'; cvs.style.height = ch + 'px';
+  const k = Math.min(cw / W, ch / H) * dpr;
+  VIEW = { k, ox: (cvs.width - W * k) / 2, oy: (cvs.height - H * k) / 2 };
+}
+const FIX = new URLSearchParams(location.search).get('t');
+if (new URLSearchParams(location.search).has('debug')) console.log('TOTAL ' + TOTAL.toFixed(1) + ' starts ' + JSON.stringify(SHOT_START));
+let clock = 0, last = null, paused = false, ended = false;
+// Sound needs a click to start, so the film waits for one.
+let started = false;
+const soundBtn = document.getElementById('sound');
+function frame(now) {
+  const dt = last === null ? 0 : Math.min(.1, (now - last) / 1000);
+  last = now;
+  if (started && !paused && !ended) clock += dt;
+  if (clock >= TOTAL - .001) { clock = TOTAL - .001; ended = true; }
+  soundUpdate(clock, started && !paused && !ended);
+  render(started ? clock : 0);
+  if (!started) startCard();
+  if (ended) endCard();
+  requestAnimationFrame(frame);
+}
+function startCard() {
+  ctx.setTransform(VIEW.k, 0, 0, VIEW.k, VIEW.ox, VIEW.oy);
+  ctx.save(); ctx.fillStyle = '#1a1d21'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center'; ctx.fillStyle = '#ece9e1';
+  ctx.font = 'italic 64px ' + SERIF; ctx.fillText('The Stumble-Stop', W / 2, H / 2 - 20);
+  ctx.font = 'italic 30px ' + SERIF; ctx.fillStyle = 'rgba(236,233,225,.85)'; ctx.fillText('▶  Click to begin (with sound)', W / 2, H / 2 + 60);
+  ctx.restore();
+}
+function endCard() {
+  ctx.setTransform(VIEW.k, 0, 0, VIEW.k, VIEW.ox, VIEW.oy);
+  ctx.save(); ctx.font = 'italic 34px ' + SERIF; ctx.textAlign = 'center'; ctx.fillStyle = '#ece9e1';
+  ctx.fillText('↻  Watch again', W / 2, H / 2 + 12); ctx.restore();
+}
+function toggle() {
+  if (!started) { started = true; soundInit(); if (SND.ctx) { SND.ctx.resume(); soundSeek(clock); soundBtn.hidden = false; } return; }
+  if (ended) { clock = 0; ended = false; paused = false; soundSeek(0); }
+  else paused = !paused;
+}
+function toggleSound() {
+  SND.on = !SND.on;
+  if (SND.master) SND.master.gain.setTargetAtTime(SND.on ? .9 : 0, SND.ctx.currentTime, .05);
+  soundBtn.textContent = SND.on ? '🔊 Sound on' : '🔇 Sound off';
+  soundBtn.title = SND.on ? 'Mute (M)' : 'Turn the sound back on (M)';
+  soundBtn.setAttribute('aria-pressed', SND.on);
+}
+soundBtn.addEventListener('click', e => { e.stopPropagation(); toggleSound(); });
+addEventListener('resize', () => { resize(); if (FIX !== null) render(parseFloat(FIX)); });
+addEventListener('click', toggle);
+addEventListener('keydown', e => { if (e.key === ' ') { toggle(); e.preventDefault(); } if (e.key === 'm') toggleSound(); });
+resize();
+let held = 0;
+function hold() { resize(); render(parseFloat(FIX)); if (++held < 60) requestAnimationFrame(hold); }
+if (FIX !== null) hold(); else requestAnimationFrame(frame);
+</script>
+</body>
+</html>

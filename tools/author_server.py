@@ -28,7 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ANIM = ROOT / 'animations'
 MANIFEST = ROOT / 'animations.json'
-TEMPLATE = ROOT / 'prompt.txt'
+TEMPLATES = {'classic': ROOT / 'prompt.txt', 'scion': ROOT / 'prompt-scion.txt'}
 PORT = int(os.environ.get('PORT', '8001'))
 SLUG_RE = re.compile(r'^[a-z0-9][a-z0-9-]*$')
 
@@ -39,6 +39,11 @@ BLANKS = {
     '{{ASPECT_RATIO_OR_INFER}}': 'aspect',
     '{{VISUAL_DIRECTION_OR_INFER}}': 'visual',
 }
+# The scion prompt has its blanks in one sentence near the top, in square brackets.
+SCION_WORK = 'an animated film'
+SCION_FORMAT = 'a single self-contained HTML page (canvas or SVG with inline JavaScript)'
+SCION_RESOURCES = ('Claude Code on this computer, on the owner\'s subscription, with headless Chrome for checking frames; '
+                   'no paid APIs or network services; at most a few subagents at a time, and ask before using more')
 
 
 def find_claude():
@@ -76,10 +81,24 @@ def slugify(name):
 
 
 def fill_prompt(fields):
-    text = TEMPLATE.read_text(encoding='utf-8')
+    kind = fields.get('template') or 'classic'
+    if kind not in TEMPLATES:
+        raise ValueError('Unknown prompt template.')
+    text = TEMPLATES[kind].read_text(encoding='utf-8')
+    v = lambda key: (fields.get(key) or '').strip()
+    if kind == 'scion':
+        source = f'the direction “{v("direction")}”'
+        if v('references'):
+            source += f', with these references: “{v("references")}”'
+        if v('visual'):
+            source += f', and these visual qualities: “{v("visual")}”'
+        fmt = f'{SCION_FORMAT}, duration: {v("duration") or "infer"}, aspect ratio: {v("aspect") or "infer"}'
+        for blank, value in [('[WORK]', SCION_WORK), ('[DIRECTION AND REFERENCES]', source),
+                             ('[FORMAT, DURATION, ASPECT RATIO]', fmt), ('[AVAILABLE RESOURCES]', v('resources') or SCION_RESOURCES)]:
+            text = text.replace(blank, value, 1)
+        return text
     for blank, key in BLANKS.items():
-        value = (fields.get(key) or '').strip() or 'infer'
-        text = text.replace(blank, value)
+        text = text.replace(blank, v(key) or 'infer')
     return text
 
 
@@ -130,7 +149,8 @@ def folder(slug):
 # ---------- API ----------
 
 def api_list(_):
-    return {'animations': animations()}
+    return {'animations': animations(), 'scionResources': SCION_RESOURCES,
+            'templates': [k for k, p in TEMPLATES.items() if p.exists()]}
 
 
 def api_create(body):

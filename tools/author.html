@@ -63,6 +63,14 @@
     <section class="panel">
       <form class="maker" id="maker" autocomplete="off">
         <div class="field">
+          <label for="template">Prompt</label>
+          <p class="hint">Classic is the long studio procedure (key poses, in-betweens, multiplane camera). Scion runs the work as a production with independent critics and costs more.</p>
+          <select id="template">
+            <option value="classic">Classic studio (prompt.txt)</option>
+            <option value="scion">Scion (prompt-scion.txt)</option>
+          </select>
+        </div>
+        <div class="field">
           <label for="name">Name</label>
           <p class="hint">A short title. It becomes the folder name.</p>
           <input id="name" type="text" placeholder="The Sheep and the Horses" required>
@@ -101,6 +109,11 @@
           <p class="hint">Style, palette, mood, language of the captions, sound or silence.</p>
           <textarea id="visual" rows="2" placeholder="infer"></textarea>
         </div>
+        <div class="field" id="resources-field" hidden>
+          <label for="resources">Resources</label>
+          <p class="hint">Scion only: what the production may use. Empty means the default shown, which keeps it to a few subagents.</p>
+          <textarea id="resources" rows="3"></textarea>
+        </div>
         <div class="actions">
           <button type="submit" class="primary" id="create">Create</button>
           <label class="check"><input type="checkbox" id="start" checked> then open Claude Code to make it</label>
@@ -117,7 +130,7 @@
   </main>
 
   <script>
-    var FIELDS = ['name', 'direction', 'references', 'duration', 'aspect', 'visual'];
+    var FIELDS = ['template', 'name', 'direction', 'references', 'duration', 'aspect', 'visual', 'resources'];
     var STORE = 'ai-animation-author-draft';
     function el(id) { return document.getElementById(id); }
     function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -156,8 +169,12 @@
         try { localStorage.setItem(STORE, JSON.stringify(d)); } catch (e) {}
       });
     });
+    function showTemplate() { el('resources-field').hidden = el('template').value !== 'scion'; }
+    el('template').addEventListener('change', showTemplate);
+    showTemplate();
     el('clear').addEventListener('click', function () {
       FIELDS.forEach(function (f) { el(f).value = ''; });
+      el('template').value = 'classic'; showTemplate();
       try { localStorage.removeItem(STORE); } catch (e) {}
       say(''); el('next').hidden = true;
     });
@@ -166,7 +183,7 @@
       var body = {}; FIELDS.forEach(function (f) { body[f] = el(f).value; });
       el('create').disabled = true; say('Creating…');
       api('create', body).then(function (data) {
-        FIELDS.forEach(function (f) { el(f).value = ''; });
+        FIELDS.forEach(function (f) { if (f !== 'template') el(f).value = ''; });
         try { localStorage.removeItem(STORE); } catch (e) {}
         load();
         if (!el('start').checked) { say('Created animations/' + data.slug + '.'); return; }
@@ -219,6 +236,8 @@
     function load() {
       return api('animations').then(function (data) {
         el('offline').hidden = true;
+        if (data.scionResources) el('resources').placeholder = data.scionResources;
+        if (data.templates && data.templates.indexOf('scion') < 0) el('template').querySelector('[value="scion"]').disabled = true;
         el('list').innerHTML = data.animations.map(card).join('');
         el('count').textContent = data.animations.length + ' folders in animations/.';
       }).catch(function () { el('offline').hidden = false; el('create').disabled = true; });

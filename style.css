@@ -219,6 +219,10 @@ a { color: var(--accent); }
 
 /* Prompt text */
 
+.meta-prompt { margin-top: 2px; }
+.prompt-tabs { display: flex; gap: 16px; margin: 0 0 8px; }
+.prompt-section { scroll-margin-top: 16px; }
+
 .prompt-text {
   background: var(--surface);
   border: 1px solid var(--border);
