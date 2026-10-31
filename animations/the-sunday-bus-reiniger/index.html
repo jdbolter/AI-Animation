@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>The Sunday Bus · Shadow theatre</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#171511;color:#f3e5c8;font-family:Georgia,serif}canvas{display:block;width:100%;height:100%;object-fit:contain}button{font:14px Georgia,serif;color:#f3e5c8;background:#211e19e8;border:1px solid #9e8b69;border-radius:3px;padding:9px 13px;cursor:pointer}button:focus-visible,input:focus-visible{outline:2px solid #fff;outline-offset:3px}#start{position:absolute;inset:0;display:grid;place-items:center;background:#120e0966}#start button{font-size:20px;padding:17px 30px;box-shadow:0 4px 40px #0005}#controls{position:absolute;bottom:7px;left:3%;right:3%;display:flex;align-items:center;gap:12px;opacity:0;transition:opacity .2s;background:#171511e8;padding:7px}body:hover #controls,body:focus-within #controls,body.paused #controls{opacity:1}#seek{flex:1;min-width:20px;accent-color:#d1bb8b}#clock{font:12px system-ui;white-space:nowrap}#sound{position:absolute;right:16px;top:12px}#pause{min-width:66px}@media(max-width:600px){button{font-size:12px;padding:7px}#clock{font-size:10px}#controls{gap:5px;bottom:0}#sound{right:7px;top:7px}}
+</style></head>
+<body><canvas id="film" width="1280" height="720" aria-label="The Sunday Bus, an articulated silhouette film with English story captions"></canvas>
+<div id="start"><button id="begin">Watch The Sunday Bus · with sound</button></div>
+<button id="sound" aria-label="Mute sound" hidden>Sound on</button>
+<div id="controls"><button id="pause" aria-label="Pause film">Pause</button><input id="seek" type="range" min="0" step="0.083333" value="0" aria-label="Seek through film"><span id="clock"></span></div>
+<script>
+'use strict';
+// SCION Reiniger r3. Coordinate system: 1280 x 720; stage 0..594, captions 594..720.
+// Native shapes, replaceable profiles, pins and two-link chains remain editable below.
+// All illustration and sound are original procedural work. No archival image is embedded.
+const canvas=document.getElementById('film'), c=canvas.getContext('2d');
+const REVISION='reiniger-r3';
+/** @typedef {[number,number]} Point — x/y stage pixels before actor transform. */
+/** @typedef {{t?:number,walk?:boolean,seat?:boolean,head?:number,hand?:Point,backHand?:Point,dir?:number,bag?:boolean}} Pose */
+/** @typedef {{id:number,kind:string,start:number,dur:number,caps:Array<{start:number,end:number,text:string}>}} Shot */
+let rigEvidence=[],actorEvidence=[],sceneTime=0;
+const W=1280,H=720,FPS=12,INK='#191912',MID='#605e4a',FAR='#9a9679',PAPER='#e8dfbd';
+const clamp=(v,a=0,b=1)=>Math.max(a,Math.min(b,v)),mix=(a,b,t)=>a+(b-a)*t;
+const ease=t=>{t=clamp(t);return t*t*(3-2*t)},ramp=(t,a,b)=>ease((t-a)/(b-a));
+function path(d,fill=INK,stroke=null,w=1){const p=new Path2D(d);if(fill){c.fillStyle=fill;c.fill(p)}if(stroke){c.strokeStyle=stroke;c.lineWidth=w;c.stroke(p)}}
+function poly(pts,col=INK){c.beginPath();pts.forEach((p,i)=>i?c.lineTo(...p):c.moveTo(...p));c.closePath();c.fillStyle=col;c.fill()}
+function line(a,b,w=2,col=INK){c.beginPath();c.moveTo(...a);c.lineTo(...b);c.lineWidth=w;c.lineCap='round';c.strokeStyle=col;c.stroke()}
+function oval(x,y,rx,ry,col=INK){c.beginPath();c.ellipse(x,y,rx,ry,0,0,7);c.fillStyle=col;c.fill()}
+function rect(x,y,w,h,col=INK){c.fillStyle=col;c.fillRect(x,y,w,h)}
+function text(s,x,y,size=24,col=INK,align='left',italic=false){c.fillStyle=col;c.font=`${italic?'italic ':''}${size}px Georgia`;c.textAlign=align;c.fillText(s,x,y)}
+function at(x,y,s,fn,flip=1){c.save();c.translate(x,y);c.scale(s*flip,s);fn();c.restore()}
+function branch(x,y,s,flip=1){at(x,y,s,()=>{path('M0 0 Q18 -106 57 -176 Q91 -238 147 -268 L150 -263 Q95 -227 68 -166 Q31 -86 15 0Z');for(let i=0;i<11;i++){let t=i/10,xx=14+t*100,yy=-50-t*197;at(xx,yy,1,()=>{c.rotate(-.5+t*.5);path('M0 0 Q-55 -15 -44 -47 Q-4 -40 0 0 M0 0 Q15 -49 48 -37 Q40 -9 0 0')},i%2?1:-1)}},flip)}
+function grasses(x,y,s=1,col=INK){at(x,y,s,()=>{for(let i=0;i<8;i++){let a=(i-3.5)*6;path(`M${a} 0 Q${a-14} -28 ${a*2-6} ${-36-i%3*12} Q${a+3} -22 ${a+4} 0Z`,col)}})}
+function gull(x,y,s,t,col=INK){at(x,y,s,()=>{let wing=5+Math.sin(t*2)*8;path(`M-22 ${-wing} Q-9 -9 0 0 Q10 -9 24 ${-wing} Q9 -2 0 5 Q-10 -2 -22 ${-wing}`,col)})}
+function sea(t,horizon=280){rect(0,horizon,W,350,'#b5b39a');for(let j=0;j<15;j++){let y=horizon+12+j*18;line([100*Math.sin(j*2+t*.08)-100,y],[W+100,y],j%4===0?2:1,j%3?'#d4d1b3':'#959b88')}for(let i=0;i<3;i++)gull(880+i*92+Math.sin(t*.1+i)*25,horizon-36-i*14,.45,t+i,MID)}
+function coast(t){sea(t,258);path('M0 402 Q120 358 240 385 Q390 323 520 368 L695 446 Q865 460 1000 572 L1280 584 L1280 630 L0 630Z',FAR);path('M0 468 Q170 399 326 436 Q477 420 588 484 Q680 506 773 594 L0 625Z',MID);path('M0 550 Q170 513 314 548 Q472 510 655 570 L760 625 L0 625Z');for(let i=0;i<8;i++)grasses(40+i*73,570+Math.sin(i)*20,.6,MID)}
+function church(x,y,s,col=MID){at(x,y,s,()=>{path('M-90 0 L-90 -105 L-42 -142 L5 -106 L5 -191 L18 -191 L18 -208 L31 -208 L31 -191 L44 -191 L44 0Z',col);rect(-90,-97,134,5,PAPER);path('M-55 0 L-55 -48 Q-37 -77 -19 -48 L-19 0Z',PAPER);rect(15,-165,15,37,PAPER);line([22,-162],[22,-130],3,col)})}
+function wall(x,y,w=300,h=95,col=INK){rect(x,y-h,w,h,col);for(let j=0;j<4;j++)for(let i=0;i<Math.ceil(w/47);i++){let xx=x+i*47+(j%2)*21;line([xx,y-j*22],[xx+39,y-j*22-1],1.1,'#78755b')}}
+function map(x,y,s=1,open=1,wind=0,reverse=false,turn=0){at(x,y,s,()=>{
+ let w=150*open,cos=Math.cos(turn*Math.PI);c.scale(Math.max(.025,Math.abs(cos)),1);c.rotate(Math.sin(turn*Math.PI)*-.09);
+ poly([[-w,-44],[w,-44-wind],[w,49],[-w,44]],reverse?'#eee3bf':'#e9ddaf');line([-w,-44],[w,-44-wind],2);line([0,-44-wind*.5],[0,47],1,'#c7b995');
+ if(!reverse){path(`M${-w+12} 26 Q-36 -35 22 4 Q64 18 ${w-8} -20`,null,'#757b65',2);c.save();c.beginPath();c.rect(-w,-50,2*w,100);c.clip();line([-62,25],[-8,-12],2.5,'#4d5650');line([-8,-12],[62,-25],2.5,'#4d5650');oval(-62,25,4,4,MID);oval(62,-25,4,4,MID);c.restore()}
+ })}
+// Two-bone inverse kinematics. Connected points share exact endpoints.
+function ik(a,b,l1,l2,bend=1){let dx=b[0]-a[0],dy=b[1]-a[1],d=Math.hypot(dx,dy);let q=clamp(d,Math.abs(l1-l2)+.001,l1+l2-.001);let base=Math.atan2(dy,dx),ang=Math.acos(clamp((l1*l1+q*q-l2*l2)/(2*l1*q),-1,1));return[a[0]+l1*Math.cos(base+bend*ang),a[1]+l1*Math.sin(base+bend*ang)]}
+function limb(a,b,l1,l2,w,bend=1,col=INK){let k=ik(a,b,l1,l2,bend);rigEvidence.push({a,b,k,l1,l2});line(a,k,w,col);line(k,b,w*.78,col);oval(k[0],k[1],w*.5,w*.5,col);return k}
+function hand(x,y,ang=0,col=INK){at(x,y,1,()=>{c.rotate(ang);path('M-4 -5 Q1 -9 7 -6 L17 -3 Q21 -1 17 1 L8 1 L14 4 Q16 7 12 7 L1 4 L-4 3Z',col)})}
+const PARTS={profile:'M-16 -202 Q-22 -221 -8 -232 Q9 -243 20 -228 Q25 -218 21 -212 L29 -202 L20 -199 L22 -194 L17 -190 Q15 -184 6 -187 L4 -175 L-12 -178 L-10 -193Z',coat:'M-20 -178 Q0 -185 20 -172 L27 -116 L42 -68 Q11 -55 -32 -66 L-25 -117Z',thumb:'separate notch in hand contour',pins:['hip','knee','ankle','shoulder','elbow','wrist'],limits:{knee:[0,2.8],elbow:[0,2.9]}};
+function puppet(x,y,s=1,o={}){
+ let result;at(x,y,s,()=>{
+ const tt=o.t||0,walking=!!o.walk,seat=!!o.seat,dir=o.dir||1,t=o.time??sceneTime;
+ const alive=o.idle!==false,breath=alive?1.3*Math.sin(t*1.65+.4):0;
+ const sway=alive&&!walking?1.5*Math.sin(t*.72):0,bob=walking?-2*Math.cos(tt*2*Math.PI):0;
+ const lean=(o.lean||0)+(alive&&!walking?.012*Math.sin(t*.91):0),pivot=seat?-90:-112;
+ const bodyPoint=p=>[sway+p[0]*Math.cos(lean)-(p[1]-pivot)*Math.sin(lean),pivot+bob+breath+p[0]*Math.sin(lean)+(p[1]-pivot)*Math.cos(lean)];
+ const world=p=>{let v=bodyPoint(p);return[x+dir*s*v[0],y+s*v[1]]};
+ c.scale(dir,1);let hip=bodyPoint([0,seat?-90:walking?-105:-112]);
+ let feet=[[-11,0],[15,0]];
+ if(walking)feet=[0,.5].map(off=>{let ph=((tt+off)%1+1)%1;return ph<.5?[27-108*ph,0]:[-27+54*ease((ph-.5)*2),-18*Math.sin((ph-.5)*2*Math.PI)]});
+ if(seat)feet=[[60,0],[78,0]];
+ for(let i=0;i<2;i++){let a=[hip[0]+(i?8:-7),hip[1]];limb(a,feet[i],seat?65:58,seat?60:58,11,-1,i?INK:'#464637');path(`M${feet[i][0]-7} ${feet[i][1]-7} Q${feet[i][0]+3} ${feet[i][1]-5} ${feet[i][0]+18} ${feet[i][1]-4} L${feet[i][0]+19} ${feet[i][1]+2} L${feet[i][0]-8} ${feet[i][1]+2}Z`,i?INK:'#464637')}
+ c.save();c.translate(sway,bob+breath+pivot);c.rotate(lean);c.translate(0,-pivot);
+ const shoulder=[12,-164],rearShoulder=[-15,-165];
+ let wrist=o.hand||[17+(alive?1.2*Math.sin(t*.8):0),-89],back=o.backHand||[-10,-93];
+ if(walking){let swing=Math.sin(tt*Math.PI*2);wrist=[17+swing*22,-90+Math.abs(swing)*4];back=[-10-swing*20,-98+Math.abs(swing)*2]}
+ // Every elbow flexes toward the profile's front. Mirroring happens at the actor root.
+ // A nearly straight resting arm is deliberately different from an invitation or a hold.
+ function arm(a,target,l1,l2,w,col,angle){let dx=target[0]-a[0],dy=target[1]-a[1],d=Math.hypot(dx,dy),reach=Math.min(d,l1+l2-.15),b=[a[0]+dx/d*reach,a[1]+dy/d*reach];let k=limb(a,b,l1,l2,w,1,col);hand(...b,angle??Math.atan2(b[1]-k[1],b[0]-k[0]),col);return{a,k,b,requested:target,clamped:d>l1+l2-.15}}
+ let rear=arm(rearShoulder,back,38,37,12,'#464637',o.backAngle);
+ if(seat)path('M-22 -177 Q0 -184 20 -172 L25 -116 L66 -104 L70 -81 L-28 -68Z');else path(PARTS.coat);
+ if(o.bag){path('M-25 -163 Q-65 -164 -50 -111 L-25 -110Z');line([-27,-167],[-9,-116],4,'#89836a')}
+ c.save();c.translate(0,-184);c.rotate((o.head||0)+(alive?.025*Math.sin(t*1.2):0));c.translate(0,184);path(PARTS.profile);
+ if(!o.male){oval(-21,-216,12,13);path('M-23 -223 Q-8 -248 17 -231 L21 -220 Q-2 -229 -13 -213Z')}else{path('M-24 -223 Q-9 -246 18 -235 L29 -225 L-25 -220Z');path('M16 -195 L30 -192 L16 -186Z')};c.restore();
+ let front=arm(shoulder,wrist,42,41,13,INK,o.handAngle);
+ c.restore();result={front:world(front.b),back:world(rear.b),head:world([12,-205]),feet:feet.map(p=>[x+dir*s*p[0],y+s*p[1]])};
+ actorEvidence.push({x,y,s,dir,walking,seat,front,rear,feet:result.feet});
+ });return result}
+function pulse(t,a,b,c,d){return ramp(t,a,b)*(1-ramp(t,c,d))}
+function cue(kind,phrase,fallback=0){return shots.find(s=>s.kind===kind)?.caps.find(q=>q.text.includes(phrase))?.start??fallback}
+function croppedHand(x,y,angle=0,scale=1){at(x,y,scale,()=>{c.rotate(angle);path('M-26 850 L-24 38 Q-18 15 -11 6 L-9 -14 L-4 -38 Q0 -44 4 -38 L4 -17 L9 -48 Q13 -53 17 -46 L15 -15 L23 -42 Q29 -46 30 -38 L25 -9 L33 -28 Q39 -31 39 -23 L33 9 Q31 20 22 30 L24 850Z');line([-20,65],[22,65],2,MID)})}
+function photo(x,y,angle=0,k=0){at(x,y,1,()=>{c.rotate(angle);rect(-86,-64,172,128,PAPER);path('M-73 -51 L73 -51 L73 51 L-73 51Z',MID);path('M30 -45 L7 -12 L18 -12 L-3 19 L11 19 L-16 47 L69 47 L45 19 L59 19 L38 -12 L49 -12Z');for(let i=0;i<3+k;i++){let xx=-61+i*22;oval(xx,5,7,8,INK);rect(xx-7,13,14,28,INK)}})}
+function windows(x,y,n=3){for(let i=0;i<n;i++){let xx=x+i*112;path(`M${xx} ${y} L${xx} ${y-119} Q${xx+36} ${y-162} ${xx+72} ${y-119} L${xx+72} ${y}Z`,'#b9b292');line([xx+36,y-139],[xx+36,y],5);line([xx,y-64],[xx+72,y-64],4)}}
+function library(u,d){
+ let objectStart=cue('library','There were rubber'),returnAt=cue('library','Martin had given');
+ if(u>objectStart-.3&&u<returnAt-.3){
+   let q=u-objectStart;rect(95,72,1090,490,MID);rect(120,94,1040,445,'#b4a683');
+   map(640,400,.76,.5);text('COAST PATH',640,397,19,INK,'center');let aside=ramp(q,7.4,9.3);
+   for(let k=0;k<3;k++)photo(mix(645+k*12,385-k*75,aside),mix(390+k*7,330-k*24,aside),(k-1)*(.09+aside*.17),k);
+   // Rubber bands are stretched and snap, then the hands release the pieces.
+   let pull=ramp(q,.6,2.1),snap=q>2.1,withdraw=ramp(q,2.8,3.5);
+   for(let k=0;k<4;k++){c.beginPath();c.ellipse(252+k*26,190+(k%2)*18,13,8,0,0,7);c.strokeStyle=INK;c.lineWidth=3;c.stroke()}
+   if(q<3.5){let lx=420-45*pull-(snap?18:0),rx=471+66*pull+(snap?25:0),yy=270;
+     if(!snap){c.save();c.translate((lx+rx)/2,yy);c.scale((rx-lx)/2,7-4*pull);c.beginPath();c.arc(0,0,1,0,7);c.lineWidth=.07;c.strokeStyle=INK;c.stroke();c.restore()}else{path(`M${lx} ${yy} q18 -7 34 18`,null,INK,4);path(`M${rx} ${yy} q-20 8 -33 -16`,null,INK,4)}
+     croppedHand(lx,yy+18+withdraw*400,-.18,.8);croppedHand(rx,yy+18+withdraw*400,.14,.8)}
+   let open=pulse(q,3.3,4.1,5.4,6);at(902,222,1,()=>{oval(0,6,94,25);path(`M-94 0 Q-85 ${-28-open*62} 0 ${-31-open*73} Q85 ${-28-open*62} 94 0Z`);if(open>.01)oval(0,-6,76,14,'#b4a683')});
+   if(q>3.1&&q<6.2)croppedHand(953,178+(1-pulse(q,3.1,3.6,5.5,6.2))*460,.2,.85);
+   if(q>6.4&&q<10.2)croppedHand(mix(675,360,aside),465-100*aside+(1-pulse(q,6.4,6.9,9.5,10.2))*400,-.15,.9);
+   branch(20,594,.45);return
+ }
+ rect(100,80,1080,475,MID);windows(710,333,3);for(let j=0;j<4;j++){rect(124,147+j*81,450,8);for(let i=0;i<21;i++){let h=35+(i*17+j*13)%35;rect(132+i*20,147+j*81-h,13,h,'#34362b')}}
+ let pull=ramp(u,1.1,3.8);rect(555,422,305,22);rect(567,444,15,126);rect(822,444,15,126);rect(568-22*pull,435,160,49);line([582-22*pull,451],[613-22*pull,451],4,PAPER);
+ let holding=u>=returnAt-.3,reach=ramp(u,.8,1.6),relax=ramp(u,4.2,5.5);
+ let hd=holding?[62,-126]:[mix(17,60-18*pull,reach)*(1-relax)+17*relax,mix(-89,-96,reach)];
+ let r=puppet(510,566,1.2,{head:holding?.2:.08+.13*pull,hand:hd,handAngle:holding?0:undefined});
+ if(holding){map(r.front[0]+45,r.front[1]+8,.32,.7);text('COAST',r.front[0]+35,r.front[1]+8,8,MID,'center')}
+ branch(0,594,.58)}
+function memory(u,d){
+ rect(90,110,1100,447,'#aaa285');for(let i=0;i<5;i++){rect(100,162+i*72,480,5,MID);for(let j=0;j<19;j++)rect(109+j*24,119+i*72,15,43,MID)}
+ rect(495,442,308,16);rect(515,458,12,114);rect(778,458,12,114);
+ let arrival=Math.min(u,3.2),mx=1130-arrival*94,walk=u<3.2;
+ let offerStart=cue('memory','You’d like'),offer=pulse(u,offerStart,offerStart+.6,offerStart+2.6,offerStart+3.2);
+ let first=cue('memory','For a while'),last=cue('memory','Eventually');
+ if(u>first&&u<last-2){let q=(u-first)%7.2;offer=Math.max(offer,pulse(q,.4,1,3.3,4.1))}
+ let describe=pulse(u,3.2,4,offerStart-.6,offerStart),endDescribe=ramp(u,last,last+1);
+ let gesture=Math.max(offer,describe*.7),sweep=gesture*Math.sin(u*2.4)*6;
+ let mr=puppet(mx,561,1.22,{male:true,dir:-1,walk,t:(1130-mx)/(108*1.22),lean:offer*.035,head:-.05-offer*.08,hand:[17+gesture*47+sweep,-89-gesture*57]});
+ let decline=offer*(.6+.4*Math.sin(u*3.8)**2);let hr=puppet(383,561,1.22,{head:.04-decline*.16,lean:-decline*.015,hand:[17+decline*25,-89-decline*36]});
+ map(650,437,.45);let elapsed=Math.max(0,Math.min(u,last)-first),num=Math.floor(elapsed/5.5),flip=(elapsed/5.5)%1;
+ rect(690,145,118,125,PAPER);text('MONDAY',749,171,13,INK,'center');text(String(3+num*7),749,242,44,INK,'center');if(flip<.1&&u>first)rect(690,175,118,95*(1-flip/.1),'#d3c6a4');
+ for(let i=0;i<6;i++){let xx=1020+i*18;if(xx>mx+50)oval(xx,565+(i%2)*5,7,2.5,MID)}branch(1245,590,.6,-1)}
+function mapShot(u,d){let unfoldX=mix(.34,1,ramp(u,.3,1.3)),unfoldY=mix(.45,1,ramp(u,1.2,2.4));at(640,309,2.7,()=>{c.scale(unfoldX,unfoldY);map(0,0,1,1,0);text('BELLWICK',-113,37,9,MID);text('CHAPEL',52,-28,9,MID);c.save();c.beginPath();c.rect(-125,-55,250*ramp(u,4,10),110);c.clip();text('8.10 out. 6.40 back.',-110,-20,11,INK,'left',true);text('Café does a decent lunch.',-110,-4,11,INK,'left',true);c.restore()});grasses(91,594,1);grasses(1170,594,1.4)}
+function cards(u,d){rect(220,442,880,14,MID);let feb=cue('cards','They exchanged',4),reply=cue('cards','larger letters',11),empty=cue('cards','no card',16);
+ for(let i=0;i<7;i++){let pop=ramp(u,.5+i*.33,1+i*.33);at(260+i*98,440,1,()=>{c.scale(1,pop);rect(-33,-114,66,114,PAPER);path('M0 -98 L-22 -61 L-12 -61 L-31 -26 L31 -26 L12 -61 L22 -61Z',MID)})}
+ let open=ramp(u,feb+.8,feb+1.5);at(967,440,1,()=>{c.scale(1,open);rect(-35,-119,70,119,PAPER);for(let j=0;j<4;j++){c.beginPath();for(let i=0;i<25;i++){let xx=-27+i*2.2,yy=-94+j*20+Math.sin(i*2+j)*2;i?c.lineTo(xx,yy):c.moveTo(xx,yy)}c.strokeStyle=INK;c.lineWidth=1.4;c.stroke()}text('February',0,-5,10,INK,'center',true)});
+ let rep=pulse(u,reply,reply+.7,empty-.7,empty);if(rep>0){at(640,310+360*(1-rep),1,()=>{c.rotate(-.04);rect(-270,-135,540,270,PAPER);text('Dear Martin,',-236,-45,44);text('Happy Christmas.',-236,25,38);text('With love, Helen',-200,90,36)});croppedHand(909,420+360*(1-rep),.18,.72)}
+ if(u>empty){c.save();c.globalAlpha=ramp(u,empty,empty+.8);c.setLineDash([7,8]);c.strokeStyle=MID;c.lineWidth=2;c.strokeRect(1042,321,70,120);c.restore()}
+ branch(30,594,.75);branch(1250,594,.75,-1)}
+function handbag(u,d){rect(220,180,840,370,MID);path('M427 535 L448 276 Q640 223 824 276 L851 535Z');path('M477 288 L488 245 Q640 122 794 245 L802 288',null,INK,17);rect(474,279,333,31,'#080b08');let drop=ramp(u,1,3);map(641,mix(185,330,drop),.62,.35);rect(443,307,386,230);croppedHand(706,mix(145,310,drop)+ramp(u,3.1,3.9)*450,.13,.75);rect(625,301,35,19,PAPER);branch(30,594,.55)}
+function clockShot(u,d){windows(870,381,2);let dawn=ramp(u,0,5);c.save();c.globalAlpha=.4*(1-dawn);rect(20,22,1240,564,INK);c.restore();rect(202,457,610,16,MID);oval(542,319,112,112);oval(542,319,100,100,PAPER);for(let i=0;i<12;i++){let a=i*Math.PI/6;oval(542+84*Math.sin(a),319-84*Math.cos(a),2,2)}let minute=mix(58,59,ramp(u,1,2));line([542,319],[542+80*Math.sin(minute*Math.PI/30),319-80*Math.cos(minute*Math.PI/30)],3);line([542,319],[542-34,319-33],5);let press=pulse(u,2.3,2.7,3.8,4.2);rect(525,197+press*5,35,13);if(u>1.6&&u<4.8)croppedHand(549,192+(1-pulse(u,1.6,2.3,4.2,4.8))*-360,Math.PI,.82);branch(30,594,.55)}
+function packing(u,d){rect(220,105,840,450,'#b8b096');let arrive=ramp(u,.3,1.6),bx=mix(-320,640,arrive);at(bx,360,1,()=>{path('M-210 160 L-190 -130 Q0 -170 190 -130 L215 160Z');rect(-165,-103,330,230,'#353a2d');line([-140,-128],[-130,-163],9);line([140,-128],[130,-163],9);
+ let packStart=cue('packing','She packed',6);for(let [off,kind,xx]of [[.6,'sandwich',-80],[2.2,'apple',70],[3.8,'cardigan',0]]){let t=packStart+off;if(u<t)continue;let drop=ramp(u,t,t+.6),yy=mix(-490,kind==='cardigan'?35:0,drop);at(xx,yy,1,()=>{if(kind==='sandwich'){poly([[-55,-30],[55,-30],[-55,40]],PAPER);line([-45,-23],[30,-23],4,MID)}else if(kind==='apple'){oval(0,0,30,28,PAPER);line([0,-28],[5,-41],4);path('M5 -39 Q20 -54 27 -43 Q19 -32 5 -39Z',MID)}else{rect(-112,-45,224,92,MID);line([-25,-45],[-25,47],3,PAPER);for(let j=0;j<3;j++)oval(-11,-26+j*27,3,3,PAPER)}})}
+ let pull=ramp(u,d-3,d-1.5);line([-180+360*pull,-114],[-180+360*pull,-97],6,PAPER);if(u>d-3.3)croppedHand(-180+360*pull,-94+(1-pulse(u,d-3.3,d-3,d-1.5,d-.8))*450,.1,.75)});grasses(91,594,.7)}
+function busShape(x,y,s=1){at(x,y,s,()=>{path('M-235 -145 Q-228 -176 -185 -176 L202 -176 Q226 -173 239 -143 L239 -23 L-235 -23Z');for(let i=0;i<6;i++)rect(-211+i*69,-152,55,70,PAPER);rect(170,-70,44,47,PAPER);line([187,-67],[187,-24],3);for(let xx of [-154,160]){oval(xx,-22,33,33);oval(xx,-22,15,15,MID)}text('BELLWICK',-30,-128,14,INK,'center')})}
+function busStop(u,d){path('M0 500 Q340 474 640 501 Q946 474 1280 497 L1280 594 L0 594Z',MID);rect(925,200,9,345);oval(930,185,29,29);text('BUS',930,190,14,PAPER,'center');rect(880,239,100,98,PAPER);text('SUNDAY',930,263,12,INK,'center');text('08:25',930,305,25,INK,'center');
+ let leave=ramp(u,7.5,12),arrival=ramp(u,0,4);
+ if(u<6){let step=ramp(u,4.3,6);puppet(837-147*step,546,1.03,{bag:true,head:.05,dir:-1,walk:u>4.3,t:step*1.32})}
+ busShape(-400+850*arrival+1500*leave,535,1.15);branch(35,594,.7);grasses(1120,585,1)}
+function village(u,d){rect(0,514,1280,100,MID);for(let i=0;i<4;i++){let x=100+i*280;path(`M${x} 513 L${x} 210 L${x+110} 150 L${x+220} 210 L${x+220} 513Z`,i%2?MID:FAR);rect(x+30,245,45,65,PAPER);rect(x+141,245,45,65,PAPER)}rect(463,341,243,173);rect(480,356,208,139,'#c0b997');rect(466,306,238,39,PAPER);text('CANDLES & SOAP',585,332,20,INK,'center');for(let i=0;i<5;i++){rect(498+i*35,449,21,32,MID);rect(504+i*35,439,9,12,MID)}puppet(786,568,1.25,{bag:true,dir:-1,head:.08,hand:[24,-108]});church(1124,511,.7);grasses(99,593,.7)}
+function walkState(u){const stop=6.2,resume=7.4,fast=116,slow=57,dist=fast*Math.min(u,stop)+slow*Math.max(0,u-resume);return{dist,x:280+dist,moving:u<stop||u>resume,knee:pulse(u,6.2,6.5,7.1,7.4)}}
+function dog(x,y,t){at(x,y,.7,()=>{let bob=3*Math.sin(t*13);oval(0,-29+bob,29,13);oval(31,-44+bob,12,11);path(`M35 ${-50+bob} L32 ${-65+bob} L23 ${-49+bob}Z`);line([-24,-35+bob],[-43,-54+bob],4);for(let i=0;i<4;i++){let xx=-22+i*13;line([xx,-23+bob],[xx+Math.sin(t*12+i*Math.PI)*10,0],5)}})}
+function walkShot(u,d){let a=walkState(u),camera=a.x-485;sea(u,258);
+ c.save();c.translate(-camera*.18,0);for(let i=-1;i<5;i++){let x=i*620;path(`M${x} 410 Q${x+210} 277 ${x+430} 370 L${x+720} 464 L${x+720} 594 L${x} 594Z`,FAR)}church(220,428,.8,FAR);c.restore();
+ c.save();c.translate(-camera*.5,0);for(let i=-1;i<7;i++){let x=i*470;path(`M${x} 504 Q${x+180} 403 ${x+390} 492 L${x+560} 594 L${x} 594Z`,MID)}c.restore();
+ path('M0 545 Q400 530 1280 548 L1280 594 L0 594Z');line([20,554],[1260,554],4,'#918a6c');
+ c.save();c.translate(-camera,0);
+ for(let [meet,kind]of [[12,'stick'],[17,'dog']]){let mx=walkState(meet).x;for(let k=0;k<2;k++){let px=mx+110+k*85-94*(u-meet),wave=pulse(u,meet-.8,meet-.4,meet+.4,meet+.8);if(Math.abs(px-a.x)<1100){let r=puppet(px,527,.82,{dir:-1,male:k===0,bag:true,walk:true,t:(94*u-k*85)/(108*.82)});if(kind==='stick')line(r.front,[r.front[0]-12,527],3);if(kind==='dog'&&k===0)dog(px-80,534,u)}}}
+ let nod=[12,17].reduce((v,t)=>v+pulse(u,t-.6,t-.2,t+.2,t+.6),0);
+ puppet(a.x,566,1.15,{bag:true,walk:a.moving,t:a.dist/(108*1.15),head:a.knee*.22+nod*.18,lean:a.knee*.13+(u<6.2?.04:.015),hand:a.knee>.01?[34,-85]:undefined});
+ for(let i=-3;i<35;i++)grasses(i*125,591,.6+(i%3)*.17);c.restore()}
+
+function chapel(u,d){coast(u);path('M0 542 Q224 517 414 533 L1280 551 L1280 594 L0 594Z');
+ // Three broken walls. Open arch and daylight separate the actor's profile from the ruin.
+ path('M120 536 L120 157 L155 157 L155 142 L188 146 L188 171 L227 163 L227 184 L267 178 L267 212 L301 204 L301 535Z',MID);path('M156 348 L156 243 Q182 194 210 243 L210 348Z',PAPER);wall(150,536,405,62,MID);wall(878,552,300,97,MID);path('M1035 459 L1035 257 L1068 244 L1068 272 L1100 268 L1100 295 L1129 288 L1129 458Z',MID);
+ let recall=cue('chapel','She tried',12);let memory=ramp(u,recall,recall+2)*(1-ramp(u,d-7,d-4));c.save();c.globalAlpha=.22*memory;puppet(827,545,1.19,{male:true,dir:-1,seat:true,head:-.06,hand:[35+17*Math.sin(u*.7),-123-12*Math.sin(u*.7)]});c.restore();
+ let head=ramp(u,d*.22,d*.44)*-.16+ramp(u,d*.72,d*.91)*.32;
+ let bite=pulse(u,4,4.8,5.3,6.1)+pulse(u,8,8.8,9.3,10.1);let r=puppet(622,548,1.23,{seat:true,bag:true,head:head-bite*.05,hand:[mix(54,34,bite),mix(-114,-173,bite)],handAngle:-.3});poly([[r.front[0]-5,r.front[1]-9],[r.front[0]+16,r.front[1]-5],[r.front[0]-5,r.front[1]+8]],PAPER);wall(576,548,70,105);grasses(65,590,1.4);grasses(1202,591,1.1);gull(746,152,.7,u,MID)}
+function child(x,y,scale,t,bend=0){at(x,y,scale,()=>{let feet=[[-10,0],[12,0]];if(t!==null)feet=[0,.5].map(off=>{let ph=(t+off)%1;return ph<.5?[16-64*ph,0]:[-16+32*ease((ph-.5)*2),-10*Math.sin((ph-.5)*2*Math.PI)]});for(let i=0;i<2;i++){limb([i?6:-6,-58],feet[i],32,32,8,-1);line([feet[i][0]-4,feet[i][1]],[feet[i][0]+11,feet[i][1]],7)}c.save();c.translate(0,-58);c.rotate(bend);c.translate(0,58);path('M-16 -107 Q0 -115 15 -102 L22 -60 L-20 -60Z');oval(0,-125,19,22);path('M15 -130 L28 -120 L16 -115Z');path('M-19 -132 Q-10 -154 10 -146 L17 -134Z');limb([12,-101],[36,-65],28,28,8,1);hand(36,-65,.5);c.restore()})}
+function children(u,d){sea(u,180);path('M0 354 Q320 313 566 370 Q935 274 1280 338 L1280 594 L0 594Z','#cec6a4');for(let i=0;i<6;i++)path(`M${i*250-100} ${430+i%2*28} q90 -18 196 0`,null,'#a9a587',2);
+ for(let i=0;i<2;i++){let tt=Math.max(0,u-i*.65),cycle=tt%5,cycles=Math.floor(tt/5),move=cycles*3+Math.min(cycle,3),bend=pulse(cycle,3,3.5,4.3,5);child(240+i*105+move*52,451+i*37,.77,cycle<3?move*52/(64*.77):null,bend*.85)}
+ path('M0 561 Q100 503 230 541 Q389 568 436 594 L0 594Z');grasses(95,561,1.25)}
+function cold(u,d){coast(u);let close=ramp(u,1.5,4);puppet(652,558,1.35,{seat:true,head:.12+close*.09,hand:[mix(43,0,close),mix(-113,-145,close)],backHand:[mix(-10,27,close),mix(-93,-136,close)],bag:true,lean:close*.025});wall(598,558,72,113);for(let i=0;i<5;i++)path(`M${(800-i*180-u*90)%1500} ${175+i*38} q-75 -21 -157 7`,null,'#bebc9f',1);grasses(30,588,1.5)}
+function tea(u,d){rect(0,541,1280,53,MID);church(245,531,1.45,FAR);path('M690 531 L690 290 Q694 270 723 270 L1023 270 L1089 347 L1089 531Z');rect(717,307,248,110,PAPER);rect(984,337,66,77,PAPER);text('TEA',843,296,18,PAPER,'center');
+ let give=pulse(u,1,2.2,3.5,4.2);puppet(824,542,.85,{dir:-1,male:true,head:.06,hand:[17+give*44,-89-give*34]});rect(700,417,277,13);rect(715,430,250,100);
+ let took=ramp(u,3.2,4.3),sip=pulse(u,6.5,7.2,7.7,8.5)+pulse(u,10,10.7,11.2,12);let nod=pulse(u,cue('tea','Lovely',13),cue('tea','Lovely',13)+.35,cue('tea','Lovely',13)+.7,cue('tea','Lovely',13)+1);
+ let r=puppet(620,559,1.17,{head:-.02+nod*.1-sip*.04,hand:[mix(53,34,sip),mix(-113,-175,sip)],handAngle:-.12,bag:true});
+ let cp=took>.95?r.front:[mix(801,r.front[0],took),mix(407,r.front[1],took)];rect(cp[0],cp[1]-18,18,22,PAPER);path(`M${cp[0]+18} ${cp[1]-14} q14 0 0 13`,null,PAPER,3);for(let j=0;j<2;j++)path(`M${cp[0]+4+j*8} ${cp[1]-24} q${Math.sin(u*3+j)*6} -12 1 -24`,null,'#c9c3a7',1.5);oval(753,530,28,28);oval(1016,530,28,28);grasses(1220,590,1.2)}
+function finalMap(u,d){
+ const turnAt=cue('end','She turned',12),blankAt=cue('end','The back',16),lastAt=cue('end','She had expected',20);
+ let turn=ramp(u,turnAt+.3,turnAt+2.6),lift=pulse(u,3,4.4,5.4,6.7),press=ramp(u,4.8,6.7),close=ramp(u,8,10);
+ // Establish Helen holding the map. Then cut to the hands and paper, as in the reference.
+ if(u<8){sea(u,295);path('M0 530 Q340 509 670 541 L1280 524 L1280 594 L0 594Z',MID);rect(210,165,8,389);oval(214,151,28,28);text('BUS',214,156,14,PAPER,'center');map(642,408,.36,1,lift*70);puppet(569,573,1.45,{idle:false,head:.18,hand:[mix(50,81,press),mix(-150,-125,press)],handAngle:0,backHand:[21,-106]});branch(1260,594,.62,-1);grasses(70,594,1.2);return}
+ // The whole sheet narrows to an edge, rotates, and opens on the unmarked reverse.
+ rect(20,22,1240,564,'#aaa184');for(let j=0;j<8;j++)line([20,90+j*68],[1260,90+j*68],2,'#8f896e');
+ let scale=2.85+close*.12,mx=640,my=292+Math.sin(turn*Math.PI)*-28;
+ map(mx,my,scale,1,0,turn>=.5,turn);
+ const edge=150*scale*Math.max(.025,Math.abs(Math.cos(turn*Math.PI)));
+ croppedHand(mx-edge+36,my+90,.14,.9);croppedHand(mx+edge-32,my-52+Math.sin(turn*Math.PI)*35,-.15,.9);
+ // The blank page stays visible, without added symbols or explanatory marks.
+ if(u>lastAt+2){let settle=ramp(u,lastAt+2,lastAt+5);c.save();c.globalAlpha=.12*settle;rect(20,22,1240,564,INK);c.restore()}
+}
+
+function titleShot(u,d){coast(u);branch(0,594,1.35);branch(1280,594,1.35,-1);path('M900 552 Q956 545 1020 554 L1060 594 L900 594Z',MID);puppet(958,552,.85,{bag:true,head:.13});text('THE SUNDAY BUS',640,178,55,INK,'center');line([479,208],[800,208],1,MID);text('A story in light and shadow',640,245,24,MID,'center',true);text('after the articulated silhouette theatre of Lotte Reiniger',640,282,16,MID,'center');gull(490,352,.65,u,MID)}
+const DRAW={title:titleShot,library,memory,map:mapShot,cards,handbag,clock:clockShot,packing,bus:busStop,village,path:walkShot,chapel,children,cold,tea,end:finalMap};
+// SHOT_DATA: source paragraphs are kept verbatim. Caption schedule is the exposure sheet.
+const RAW=[{"kind": "title", "text": [], "min": 8}, {"kind": "library", "text": ["On her last afternoon at the library, Helen emptied the drawer everyone had always called hers.", "There were rubber bands that broke when she stretched them, a spectacle case without spectacles, and three photographs of the staff standing beside different Christmas trees. At the bottom lay a folded map.", "Martin had given it to her."], "min": 0}, {"kind": "memory", "text": ["He used to go walking on Sundays. On Mondays he came in with mud still caught in the seams of his boots and described places Helen had never heard of, though most were less than an hour away.", "“You’d like this one,” he would say.", "For a while, he had asked her to come.", "There had been reasons not to. Her mother needed groceries. The garden had got away from her. Once, the forecast was rain.", "“Another Sunday,” Helen always said.", "Eventually he began telling her about the walks without suggesting she join him. She had found this easier."], "min": 0}, {"kind": "map", "text": ["The map was of the coast. In blue ink he had marked a route from a village called Bellwick to a ruined chapel. Beside the bus stop he had written:", "8.10 out. 6.40 back. Café does a decent lunch."], "min": 0}, {"kind": "cards", "text": ["Martin had left the library eleven years ago to live near his daughter.", "They exchanged Christmas cards until his arrived one February with an apology about his eyesight.", "Helen had written back in larger letters.", "There had been no card the following year."], "min": 0}, {"kind": "handbag", "text": ["She put the map in her handbag."], "min": 7}, {"kind": "clock", "text": ["On Sunday she woke before the alarm."], "min": 7}, {"kind": "packing", "text": ["It took her some time to find the small rucksack she had bought for a holiday and never used again.", "She packed a cheese sandwich, an apple, and a cardigan."], "min": 15}, {"kind": "bus", "text": ["The bus now left at eight twenty-five."], "min": 13}, {"kind": "village", "text": ["Bellwick was smaller than she had imagined. The café was still there, but it sold candles and expensive soap. She stood outside it for a moment, looking through the window at a woman arranging pale green bottles."], "min": 0}, {"kind": "path", "text": ["The path began behind the church.", "At first Helen walked too quickly. Then her knee started to ache, and she slowed down. People passed her in pairs, carrying walking sticks or calling to dogs. Most said good morning. She answered each of them."], "min": 0}, {"kind": "chapel", "text": ["At the chapel there were three walls and a notice asking visitors not to climb them. Helen sat on a low stretch of stone and ate her sandwich.", "She tried to remember Martin’s voice.", "She could remember the things he said: that the buses were unreliable, that proper socks mattered more than expensive boots, that he had once seen a seal from this very headland. But the voice itself would not come."], "min": 0}, {"kind": "children", "text": ["Below her, the tide was out. Two children crossed the exposed sand, stopping frequently to examine things."], "min": 0}, {"kind": "cold", "text": ["She stayed until she felt cold."], "min": 8}, {"kind": "tea", "text": ["On the way back, she bought a cup of tea from a van beside the church. The young man serving asked whether she’d had a good walk.", "“Yes,” she said. “Lovely.”"], "min": 0}, {"kind": "end", "text": ["At the bus stop she unfolded the map to check the route she had taken. A breeze lifted one corner, and she put her palm over it.", "She turned the map over.", "The back was blank.", "She had expected, somehow, to find more of his writing."], "min": 30}];
+const READ=t=>1.2+t.trim().split(/\s+/).length/2.9,STRETCH=1.5;
+let total=0;const shots=RAW.map((s,i)=>{let off=1;let caps=s.text.map(t=>{let dur=READ(t);let out={start:off,end:off+dur,text:t};off+=dur+.8;return out});let dur=Math.max(s.min||8,off+2);let out={...s,id:i,start:total,dur,caps};total+=dur;return out});
+const seek=document.getElementById('seek'),clock=document.getElementById('clock'),start=document.getElementById('start'),pauseButton=document.getElementById('pause'),soundButton=document.getElementById('sound');seek.max=total;
+const qs=new URLSearchParams(location.search);let still=qs.has('t'),time=still?clamp(Number(qs.get('t'))||0,0,total):0,playing=false,started=false,lastStamp=0,lastFrame=-1,muted=false;
+function shotAt(t){return shots.find(s=>t<s.start+s.dur)||shots.at(-1)}
+function wrap(s,width){let words=s.split(/\s+/),lines=[],a='';for(let word of words){let next=a?a+' '+word:word;if(c.measureText(next).width>width&&a){lines.push(a);a=word}else a=next}if(a)lines.push(a);return lines}
+function render(t){rigEvidence=[];actorEvidence=[];t=Math.floor(clamp(t,0,total)*FPS)/FPS;let s=shotAt(t),u=t-s.start;sceneTime=u;c.clearRect(0,0,W,H);let g=c.createRadialGradient(650,260,60,640,300,800);g.addColorStop(0,'#f6edce');g.addColorStop(.65,PAPER);g.addColorStop(1,'#aaa184');c.fillStyle=g;c.fillRect(0,0,W,H);
+ c.save();c.beginPath();c.rect(20,22,1240,572);c.clip();DRAW[s.kind](u,s.dur);c.restore();
+ // A cut-paper proscenium, no texture within the character silhouettes.
+ rect(0,0,W,22);rect(0,0,20,594);rect(1260,0,20,594);rect(0,586,W,8);for(let i=0;i<25;i++){path(`M${20+i*50} 22 q25 27 50 0Z`)}
+ let fade=Math.min(ramp(u,0,.7),s.kind==='end'?1:1-ramp(u,s.dur-.7,s.dur));if(fade<1){c.save();c.globalAlpha=1-fade;rect(20,22,1240,564,INK);c.restore()}
+ rect(0,594,W,126,'#191912');let cap=s.caps.find(q=>u>=q.start&&u<q.end);if(cap){c.font='25px Georgia';let lines=wrap(cap.text,1120);c.fillStyle='#f1e8d0';c.textAlign='center';lines.forEach((l,i)=>c.fillText(l,640,632+(3-lines.length)*13+i*30))}
+ text(`${String(s.id+1).padStart(2,'0')} / ${String(shots.length).padStart(2,'0')}`,32,706,12,'#928b74');text('SHADOW THEATRE',1246,706,11,'#928b74','right');
+ if(t>=total-1/FPS){c.save();c.globalAlpha=.9;rect(440,467,400,54);text('Watch again',640,502,23,PAPER,'center');c.restore()}
+}
+function fmt(t){return Math.floor(t/60)+':'+String(Math.floor(t%60)).padStart(2,'0')}
+function updateUI(){seek.value=time;clock.textContent=fmt(time)+' / '+fmt(total);pauseButton.textContent=playing?'Pause':time>=total?'Replay':'Play';document.body.classList.toggle('paused',!playing)}
+// Procedural, deterministic sound. Noise is seeded; no external audio, speech, or network.
+let ac=null,master=null,windGain=null,droneGain=null,engineGain=null,noiseBuffer=null,lastCue=-1;
+function audioInit(){if(ac)return;ac=new (window.AudioContext||window.webkitAudioContext)();master=ac.createGain();master.gain.value=.7;master.connect(ac.destination);noiseBuffer=ac.createBuffer(1,ac.sampleRate*4,ac.sampleRate);let a=noiseBuffer.getChannelData(0),seed=723;for(let i=0;i<a.length;i++){seed=(seed*16807)%2147483647;a[i]=(seed/2147483647*2-1)}let n=ac.createBufferSource();n.buffer=noiseBuffer;n.loop=true;let f=ac.createBiquadFilter();f.type='lowpass';f.frequency.value=600;windGain=ac.createGain();windGain.gain.value=0;n.connect(f);f.connect(windGain);windGain.connect(master);n.start();let tone=ac.createOscillator();tone.type='sine';tone.frequency.value=110;droneGain=ac.createGain();droneGain.gain.value=0;tone.connect(droneGain);droneGain.connect(master);tone.start();let engine=ac.createOscillator();engine.type='triangle';engine.frequency.value=48;engineGain=ac.createGain();engineGain.gain.value=0;engine.connect(engineGain);engineGain.connect(master);engine.start()}
+function note(freq,dur=.5,amp=.08){if(!ac)return;let o=ac.createOscillator(),g=ac.createGain();o.type='sine';o.frequency.value=freq;g.gain.setValueAtTime(0,ac.currentTime);g.gain.linearRampToValueAtTime(amp,ac.currentTime+.015);g.gain.exponentialRampToValueAtTime(.0001,ac.currentTime+dur);o.connect(g);g.connect(master);o.start();o.stop(ac.currentTime+dur)}
+function rustle(dur=.25,amp=.07,freq=1500){if(!ac)return;let n=ac.createBufferSource(),g=ac.createGain(),f=ac.createBiquadFilter();n.buffer=noiseBuffer;f.type='bandpass';f.frequency.value=freq;n.connect(f);f.connect(g);g.connect(master);g.gain.setValueAtTime(amp,ac.currentTime);g.gain.exponentialRampToValueAtTime(.0001,ac.currentTime+dur);n.start(0,0,dur)}
+function audioTick(){if(!ac)return;let s=shotAt(time),u=time-s.start,outdoor=['bus','village','path','chapel','children','cold','tea','end'].includes(s.kind);windGain.gain.setTargetAtTime(playing&&!muted&&outdoor?.045+.02*Math.sin(time*.3):0,ac.currentTime,.2);droneGain.gain.setTargetAtTime(playing&&!muted&&s.kind==='chapel'?.008:0,ac.currentTime,.3);engineGain.gain.setTargetAtTime(playing&&!muted&&s.kind==='bus'?.035*(1-ramp(u,s.dur*.5,s.dur*.9)):0,ac.currentTime,.2);
+ let cueId=Math.floor(time*4);if(cueId===lastCue||!playing||muted)return;lastCue=cueId;if(u<.3){if(['title','map','cards'].includes(s.kind)){note(220,.9,.07);note(329.63,1.3,.035)}if(s.kind==='end')rustle(.8,.1,1800)}
+ if(s.kind==='path'&&walkState(u).moving&&cueId%(u<6.2?2:4)===0)rustle(.09,.10,450);if(s.kind==='library'){let q=u-cue('library','There were rubber');if(q>2.1&&q<2.35)note(310,.12,.07);if(q>3.8&&q<4.05)note(760,.10,.04);if(q>7.4&&q<9.3&&cueId%2===0)rustle(.18,.05,1900)}if(s.kind==='clock'&&u>2.7&&u<2.95)note(680,.12,.035);if(s.kind==='end'&&u>3&&u<7&&cueId%2===0)rustle(.18,.04,2200);if(s.kind==='end'&&u>cue('end','She turned')+.3&&u<cue('end','She turned')+2.6&&cueId%2===0)rustle(.2,.06,1700);if(s.kind==='tea'&&u>2&&u<2.4)note(920,.3,.035);
+}
+function tick(stamp){if(playing){if(lastStamp)time=Math.min(total,time+(stamp-lastStamp)/1000);if(time>=total)playing=false}lastStamp=stamp;let f=Math.floor(time*FPS);if(f!==lastFrame){render(time);lastFrame=f;updateUI()}audioTick();requestAnimationFrame(tick)}
+async function toggle(){if(still)return;if(!started){started=true;start.style.display='none';soundButton.hidden=false;audioInit()}if(time>=total)time=0;playing=!playing;if(ac)await ac.resume();lastStamp=0;updateUI()}
+canvas.addEventListener('click',toggle);document.getElementById('begin').onclick=toggle;pauseButton.onclick=toggle;soundButton.onclick=()=>{muted=!muted;soundButton.textContent=muted?'Sound off':'Sound on';soundButton.setAttribute('aria-label',muted?'Unmute sound':'Mute sound');if(master)master.gain.setTargetAtTime(muted?0:.7,ac.currentTime,.04)};
+seek.oninput=()=>{time=Number(seek.value);lastFrame=-1;lastCue=-1;render(time);updateUI()};window.addEventListener('keydown',e=>{if(e.target===seek)return;if(e.code==='Space'){e.preventDefault();toggle()}if(e.code==='ArrowRight'||e.code==='ArrowLeft'){e.preventDefault();time=clamp(time+(e.code==='ArrowRight'?5:-5),0,total);lastFrame=-1;updateUI()}});
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&playing){playing=false;updateUI()}});
+if(still){start.style.display='none';document.getElementById('controls').style.display='none'}render(time);updateUI();requestAnimationFrame(tick);
+// Inspection API: canonical timeline, editable geometry, exposure sheet, deterministic render.
+window.shadowFilm={revision:REVISION,shots,total,FPS,PARTS,ik,render,evidence:()=>rigEvidence,actors:()=>actorEvidence,walkState,seek(t){time=clamp(t,0,total);lastFrame=-1;render(time);updateUI()},state(){return{time,playing,muted,audio:ac?.state}}};
+</script></body></html>

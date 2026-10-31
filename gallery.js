@@ -13,7 +13,8 @@ function animationFile(a) {
 // The two prompt templates; an entry names its own in "template" (classic when absent).
 var PROMPTS = {
   classic: { name: 'Classic studio prompt', anchor: 'classic' },
-  scion: { name: 'Scion prompt', anchor: 'scion' }
+  scion: { name: 'Scion prompt', anchor: 'scion' },
+  reiniger: { name: 'Scion · Reiniger shadow theatre', anchor: 'reiniger' }
 };
 
 function promptOf(a) {

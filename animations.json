@@ -28,6 +28,20 @@
     "notes": "The Sunday Bus with a reader's voice: every caption is read aloud, and so are the title and Martin's note on the map. The voice is AI-generated (OpenAI gpt-4o-mini-tts, voice “fable”, asked for a British reader), made once with narrate.py and played from audio files. Each caption stays up until its line has been spoken, so the film runs a little longer than the silent one. Click to begin; the button at the top right turns the sound off and on."
   },
   {
+    "slug": "the-sunday-bus-reiniger",
+    "title": "The Sunday Bus · Shadow Theatre",
+    "direction": "Helen follows the coastal walk marked on a map an old friend gave her eleven years earlier.",
+    "type": "html",
+    "aspect": "16 / 9",
+    "previewTime": 237,
+    "model": "GPT-6",
+    "date": "2026-10-31",
+    "prompt": "prompt.txt",
+    "template": "reiniger",
+    "poster": "poster.png",
+    "notes": "A separate adaptation in articulated silhouette theatre, revised using the original Sunday Bus film’s blocking. Five minutes 17 seconds, sixteen scenes at 12 fps: drawer objects, repeated invitations, packing, a tracked coastal walk, and the remembered companion at the chapel. Characters breathe, shift weight and look toward objects; walks use a quicker stride with planted feet. In the revised ending Helen turns the map over, finds the reverse blank, then the last sentence appears. Original procedural art and synthesized sound; English captions without spoken narration. Click Watch to start; pause, seek and mute controls are available. Independent review inspected stills and sequences captured during playback; full-film motion and sound were not perceptually reviewed."
+  },
+  {
     "slug": "o-autocarro-de-domingo",
     "title": "O Autocarro de Domingo",
     "direction": "Na sua última tarde na biblioteca, a Helen esvaziou a gaveta a que todos sempre tinham chamado sua.",
