@@ -1,3 +1,32 @@
+# Revision 4 — aligned desk hands and the original narrator
+
+2026-10-31 · reiniger-r4 · 344.784 seconds (about 5:45), sixteen scenes at 12 fps.
+
+The user requested straight hand/wrist junctions in the desk inserts, removal of splash-screen subtext, and the original Sunday Bus soundtrack adapted to this version. This supersedes the initial synthesized-sound-only constraint. The original read-aloud version contains narration, so its existing recordings are reused rather than generating a new voice.
+
+## Changes and source boundary
+
+- The insert hand contour has a centered, continuous wrist and cuff. The desk gestures use straight forearms, with a mirrored left hand for the elastic. All title subtext and its decorative rule have been removed.
+- All 44 original MP3 recordings listed in `../the-sunday-bus/audio/narration.js` are embedded byte-for-byte in `index.html`. The original voice is documented there as OpenAI `gpt-4o-mini-tts`, voice `fable`. No new speech service was called. The original films and their source audio remain unchanged. The user explicitly authorized reuse for this adaptation; no new license or ownership claim is made.
+- Narration is matched to the story text. Several merged captions use consecutive original recordings, separated by a short breath. Caption duration is the greater of reading time or the full spoken duration plus a short tail; recorded speech and walking speed are not stretched.
+- The added sentences “She turned the map over.” and “The back was blank.” remain captioned, quiet visual beats. The original final-sentence recording starts after the blank reverse has been shown. No voice is falsely presented as having spoken newly generated text.
+- The previous synthesized effects are replaced by the recorded narration. Volume is normal media playback, with mute, pause, seeking and replay. The media clock drives the picture during each spoken clip. A visible loading/failure message and Retry sound action replace silent playback failure.
+- Original audio was initially linked as shared MP3s. Browser tests found seeking could restart a recording under the local server; embedding the bytes makes the film self-contained and seekable, including in the gallery’s opaque-origin sandboxed iframe. A seek waits for metadata and the seeked event before resuming.
+
+## Verification
+
+Chrome scanned all **4,138** retimed picture frames: maximum fixed-limb error **4.98×10⁻¹⁴** local units, no geometry failures, no caption overflow, no overlapping voice cues and no caption cut off before its recording ends. Every original clip is scheduled exactly once; only the two new visual sentences are unvoiced.
+
+A native mouse click in the real gallery iframe started decoded narration (readyState 4, media time advancing, unmuted). Pause held both film and media clocks; seek/resume stayed aligned within 0.011 seconds at the sample; mute changed the media element; a seek near one recording’s end progressed into the next file; the original final sentence played after the quiet turn. A deliberately missing test resource produced a visible error and Retry sound restored playback. There were no uncaught exceptions. The decoded original narration sample has duration 7.752 seconds and RMS 0.0552, establishing a nonzero foreground speech signal rather than the earlier quiet synthetic signal. These are browser/decoded-signal checks, not a claim of a human listening session.
+
+Independent shadow_reader verdict: **pass for focused r4 visual changes**, based on four desk inserts, title and ending stills. It found aligned wrists without the previous sideways kink, distinct fingers/thumbs, title without subtext, and the marked front → turn → blank reverse → final sentence order preserved. It did not assess audible narration or continuous film rhythm.
+
+Working captures, schedule and playback evidence: `/tmp/reiniger-r4/`. A recoverable copy of this revision is stored there. The HTML is about 4.95 MB, including audio, and has no external runtime assets or service dependency.
+
+---
+
+## Earlier production record (revision 3)
+
 # Revision 3 — more life, natural arms, blank reverse
 
 2026-10-31 · reiniger-r3 · 316.517 seconds (5:17), sixteen scenes at 12 fps.

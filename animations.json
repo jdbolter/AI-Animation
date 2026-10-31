@@ -33,13 +33,13 @@
     "direction": "Helen follows the coastal walk marked on a map an old friend gave her eleven years earlier.",
     "type": "html",
     "aspect": "16 / 9",
-    "previewTime": 237,
+    "previewTime": 257,
     "model": "GPT-6",
     "date": "2026-10-31",
     "prompt": "prompt.txt",
     "template": "reiniger",
     "poster": "poster.png",
-    "notes": "A separate adaptation in articulated silhouette theatre, revised using the original Sunday Bus film’s blocking. Five minutes 17 seconds, sixteen scenes at 12 fps: drawer objects, repeated invitations, packing, a tracked coastal walk, and the remembered companion at the chapel. Characters breathe, shift weight and look toward objects; walks use a quicker stride with planted feet. In the revised ending Helen turns the map over, finds the reverse blank, then the last sentence appears. Original procedural art and synthesized sound; English captions without spoken narration. Click Watch to start; pause, seek and mute controls are available. Independent review inspected stills and sequences captured during playback; full-film motion and sound were not perceptually reviewed."
+    "notes": "A separate adaptation in articulated silhouette theatre, following the original Sunday Bus film’s blocking. About five minutes 45 seconds, sixteen scenes at 12 fps. The original read-aloud version’s 44 narration clips (its AI-generated “fable” voice) are embedded and retimed to this cut, at their natural speaking speed. Click Watch to begin with narration; pause, seeking and mute work together with the voice. The new map-turn and blank-back captions are a quiet visual pause before the original final sentence. Desk-insert hands now align with their wrists, and the title has no subtext. The drawings and narration are contained in the film’s HTML, with no API or separate audio download required. Independent visual review passed the revised hands, title and ending stills; audio decoding, gallery playback and synchronization were checked in the browser."
   },
   {
     "slug": "o-autocarro-de-domingo",
