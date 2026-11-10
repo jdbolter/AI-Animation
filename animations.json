@@ -1,5 +1,35 @@
 [
   {
+    "slug": "out-of-left-field",
+    "title": "Out of Left Field",
+    "direction": "Uma ideia inesperada: três figuras, um rio e um pássaro gigante. Expressão inglesa explicada em português europeu.",
+    "type": "html",
+    "aspect": "16 / 9",
+    "model": "GPT-6",
+    "date": "2026-11-09",
+    "prompt": "prompt.txt",
+    "template": "scion",
+    "section": "essay",
+    "poster": "poster.png",
+    "previewTime": 24,
+    "notes": "77-second original articulated shadow theatre inspired by the Scion Reiniger prompt. English idiom and European Portuguese explanation; locally synthesized Joana pt-PT and Daniel en-GB narration embedded in the page, plus Web Audio effects. Click to begin; pause, seek, mute and replay."
+  },
+  {
+    "slug": "he-threw-me-a-curveball",
+    "title": "He Threw Me a Curveball",
+    "direction": "A baseball pitching demonstration explains an unexpected challenge: dinner for four suddenly becomes dinner for twenty.",
+    "type": "html",
+    "aspect": "16 / 9",
+    "model": "GPT-6",
+    "date": "2026-11-09",
+    "prompt": "prompt.txt",
+    "template": "scion",
+    "section": "essay",
+    "poster": "poster.png",
+    "previewTime": 39,
+    "notes": "108 seconds of original articulated shadow theatre. Explains pitcher, batter, spin and a downward-breaking curveball before a dinner-for-four becomes twenty. English expression with European Portuguese narration and captions; embedded local Joana and Daniel speech. Continuous illustrative pitch paths, synthesized effects, pause/seek/mute/replay."
+  },
+  {
     "slug": "the-sunday-bus",
     "title": "The Sunday Bus",
     "direction": "On her last afternoon at the library, Helen emptied the drawer everyone had always called hers.",
