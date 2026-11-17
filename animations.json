@@ -179,6 +179,19 @@
     "notes": "About two minutes, in nine shots, drawn in code on a canvas with the same approach as the other films. August Schleicher's 1868 fable, written in his reconstruction of Proto-Indo-European, is told in English captions (a close translation of his own German gloss) and set on the steppe of the Indo-Europeans: feather grass, burial mounds on the horizon, a wagon with solid wheels, and stocky dun horses with upright manes. The horses' explanation is shown as a painted band turning round a pot: wool plucked, spun on a drop spindle, woven on a warp-weighted loom, and worn as a cloak. It ends with Schleicher's reconstructed text. Click the animation to pause it."
   },
   {
+    "slug": "a-ovelha-e-os-cavalos",
+    "title": "A Ovelha e os Cavalos",
+    "direction": "Versão em português europeu de The Sheep and the Horses, com os mesmos planos, movimentos e duração, e narração Joana (pt-PT).",
+    "type": "html",
+    "aspect": "16 / 9",
+    "previewTime": 31.5,
+    "poster": "poster.png",
+    "model": "GPT-6",
+    "date": "2026-11-17",
+    "prompt": "prompt.txt",
+    "notes": "Versão portuguesa da animação original de Claude Opus 5.5. Os nove planos e a exposição original de 123,03 segundos foram preservados. Títulos e legendas traduzidos; narração sintetizada Joana, português de Portugal, incorporada no HTML. Texto protoindo-europeu final preservado."
+  },
+  {
     "slug": "tv-education",
     "title": "Room 4",
     "direction": "This animation is an alternate history of education in the United States at the grade school level from the 1960s to the present. In this version, television is used to replace printed texts and textbooks as far as possible. So, we want a series of 5 vignettes from 1960s to 2026 showing how this affects student work and progress. We see students in classrooms watching videos. Teachers in the classroom are now like tutors helping students individually. We see students working in their home watching videos. After the 1980s and 1990s especially, these videos are on computer screens and not on just television monitors.",
