@@ -1,5 +1,19 @@
 [
   {
+    "slug": "a-ra-e-o-escorpiao",
+    "title": "A Rã e o Escorpião",
+    "direction": "A fábula da rã e do escorpião: a picada que os condena aos dois. Teatro de sombras com narração em português europeu.",
+    "type": "html",
+    "aspect": "16 / 9",
+    "model": "GPT-6",
+    "date": "2026-11-17",
+    "prompt": "prompt.txt",
+    "template": "scion",
+    "poster": "poster.png",
+    "previewTime": 54,
+    "notes": "103 segundos de teatro de sombras articuladas a 12 fps, inspirado no prompt Scion–Reiniger. Narração sintetizada Joana (pt-PT) incorporada no ficheiro, legendas em português europeu e ambiente sonoro. Pausa, procura, som e repetição."
+  },
+  {
     "slug": "out-of-left-field",
     "title": "Out of Left Field",
     "direction": "Uma ideia inesperada: três figuras, um rio e um pássaro gigante. Expressão inglesa explicada em português europeu.",
